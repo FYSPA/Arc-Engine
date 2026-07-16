@@ -1,0 +1,59 @@
+# Project planning (internal, not for public repo)
+ROADMAP.md
+
+# ─── Flutter / Dart ──────────────────────────────────────────
+.dart_tool/
+.packages
+*.iml
+*.lock
+build/
+flutter_*.png
+.pub/
+pubspec.lock
+
+# ─── Android NDK / C++ build artifacts ──────────────────────
+android/.cxx/
+android/build/
+*.o
+*.so
+*.a
+*.dylib
+CMakeUserPresets.json
+CMakeFiles/
+cmake-build-*/
+.ninja*
+*.ninja
+*.d
+
+# ─── IDE / Editor ────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Environment / Secrets ───────────────────────────────────
+.env
+.env.local
+*.key
+keystore.jks
+local.properties
+
+# ─── Gradle (Android) ────────────────────────────────────────
+.gradle/
+gradle/
+*.gradle.kotlin
+gradlew
+gradlew.bat
+
+# ─── Testing / Coverage ──────────────────────────────────────
+coverage/
+test_reports/
+*.log
+
+# ─── Misc ───────────────────────────────────────────────────
+*.backup
+*.bak
+*.tmp

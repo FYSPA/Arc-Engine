@@ -1,0 +1,22 @@
+name: audio_engine_example
+description: Example app for audio_engine plugin.
+
+publish_to: "none"
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  audio_engine:
+    path: ../ # ← Aquí SÍ va, porque el example USA el plugin
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

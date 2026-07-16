@@ -1,0 +1,25 @@
+name: audio_engine
+description: Motor de audio nativo para Flutter con soporte FLAC.
+version: 0.0.1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+        # package: com.fyspa.audio_engine
+        # pluginClass: AudioEnginePlugin

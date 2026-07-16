@@ -1,0 +1,361 @@
+#include "engine_threads.h"
+#include "engine_state.h"
+#include "ring_buffer.h"
+#include "aaudio_utils.h"
+#include "flac_handler.h"
+#include "common.h"
+
+#include <cstdio>
+#include <cstring>
+#include <thread>
+#include <chrono>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <aaudio/AAudio.h>
+#include <errno.h>
+#include <FLAC/stream_decoder.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
+
+// ─── WAV Playback Thread ─────────────────────────────────────────────────────
+
+void wavPlaybackThread() {
+    uint8_t *data = gCtl.wavData;
+    uint32_t dataSize = gCtl.wavDataSize;
+    int32_t fs = gCtl.wavFrameSize;
+    int32_t sr = gCtl.sampleRate, ch = gCtl.channels, bps = gCtl.bitsPerSample;
+    int64_t total = gCtl.totalFrames;
+
+    LOGI("WAV thread started: sr=%d ch=%d bps=%d totalFrames=%lld",
+         sr, ch, bps, (long long)total);
+
+    gCtl.outChannels = ch;
+    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+    if (!gCtl.stream) {
+        LOGE("WAV thread: createAAudioStreamCallback returned NULL");
+        delete[] data; gCtl.wavData = nullptr; gCtl.running = 0; return;
+    }
+
+    LOGI("WAV thread: stream OK, entering playback loop");
+    int32_t blockSize = 4096;
+    int32_t threshold = RingBuffer::pacingThreshold(ch);
+
+    uint64_t _st = 0;
+    // Drain phantom data (device quirk: fresh eventfd returns counter=1)
+    read(gCtl.stopFd, &_st, sizeof(_st));
+
+    while (gCtl.writtenFrames.load() < total) {
+        _st = 0;
+        if (read(gCtl.stopFd, &_st, sizeof(_st)) > 0) {
+            LOGI("WAV got stop signal, exiting");
+            break;
+        }
+        if (gCtl.paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        if (seek >= 0) {
+            gCtl.writtenFrames = seek < total ? seek : total;
+            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+        }
+
+        // Pacing: don't overfill the ring buffer
+        if (gCtl.ringBuf && gCtl.ringBuf->available(ch) > threshold) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        int32_t rem = (int32_t)(total - gCtl.writtenFrames);
+        int32_t chunk = rem < blockSize ? rem : blockSize;
+        int32_t base = (int32_t)gCtl.writtenFrames;
+
+        float floatBuf[chunk * ch];
+        for (int32_t i = 0; i < chunk; i++) {
+            for (int32_t c = 0; c < ch; c++) {
+                int32_t off = (base + i) * fs;
+                float s = 0;
+                switch (bps) {
+                    case 8:  s = (data[off + c] - 128) / 128.0f; break;
+                    case 16: { int16_t v = data[off+c*2] | (data[off+c*2+1]<<8); s = v/32768.0f; break; }
+                    case 24: { int32_t v = data[off+c*3]|(data[off+c*3+1]<<8)|(data[off+c*3+2]<<16); if(v&0x800000)v|=~0xFFFFFF; s=v/8388608.0f; break; }
+                    case 32: { int32_t v = data[off+c*4]|(data[off+c*4+1]<<8)|(data[off+c*4+2]<<16)|(data[off+c*4+3]<<24); s=v/2147483648.0f; break; }
+                }
+                floatBuf[i * ch + c] = s;
+            }
+        }
+
+        if (gCtl.ringBuf) {
+            int32_t pushed = gCtl.ringBuf->push(floatBuf, chunk, ch);
+            gCtl.writtenFrames += pushed;
+        }
+    }
+
+    LOGI("WAV loop exit: running=%d wf=%lld total=%lld",
+         gCtl.running, (long long)gCtl.writtenFrames.load(), (long long)total);
+
+    // Drain ring buffer before stopping
+    if (gCtl.writtenFrames >= total && gCtl.ringBuf) {
+        while (gCtl.ringBuf->available(ch) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
+    delete[] data;
+    gCtl.wavData = nullptr;
+    gCtl.running = 0;
+    LOGI("WAV engine finished: %lld/%lld frames (cb calls=%d cb frames=%d)",
+         (long long)gCtl.writtenFrames.load(), (long long)total,
+         gCtl.callbackCount.load(), gCtl.callbackFramesTotal.load());
+}
+
+// ─── FLAC Playback Thread ────────────────────────────────────────────────────
+
+void flacPlaybackThread() {
+    PlayState ps;
+    memset(&ps, 0, sizeof(ps));
+
+    FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
+    if (!decoder) { gCtl.running = false; return; }
+
+    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+    FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
+        decoder, gCtl.path, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_delete(decoder);
+        gCtl.running = false; return;
+    }
+
+    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+    if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+        FLAC__stream_decoder_delete(decoder);
+        gCtl.running = false; return;
+    }
+
+    gCtl.sampleRate = ps.info.sampleRate;
+    gCtl.channels = ps.info.channels;
+    gCtl.totalFrames = ps.info.totalSamples;
+    gCtl.outChannels = ps.info.channels;
+
+    gCtl.stream = createAAudioStreamCallback(ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
+    if (!gCtl.stream) { FLAC__stream_decoder_delete(decoder); gCtl.running = 0; return; }
+    gCtl.running = 1;
+    ps.stream = gCtl.stream;
+
+    int32_t ch = ps.info.channels;
+    int32_t threshold = RingBuffer::pacingThreshold(ch);
+
+    uint64_t _stopFlac = 0;
+    while (read(gCtl.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
+        _stopFlac = 0;
+        if (ps.info.totalSamples > 0 && gCtl.writtenFrames >= ps.info.totalSamples)
+            break;
+
+        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        if (seek >= 0) {
+            if (seek < ps.info.totalSamples || ps.info.totalSamples == 0) {
+                FLAC__stream_decoder_seek_absolute(decoder, seek);
+                gCtl.writtenFrames = seek;
+                if (gCtl.ringBuf) gCtl.ringBuf->reset();
+            }
+        }
+
+        if (gCtl.paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        // Pacing
+        if (gCtl.ringBuf && gCtl.ringBuf->available(ch) > threshold) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        if (!FLAC__stream_decoder_process_single(decoder)) break;
+        if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) break;
+    }
+
+    // Drain ring buffer
+    bool finished = (ps.info.totalSamples > 0 && gCtl.writtenFrames >= ps.info.totalSamples);
+    if (finished && gCtl.ringBuf) {
+        while (gCtl.ringBuf->available(ch) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
+    FLAC__stream_decoder_finish(decoder);
+    FLAC__stream_decoder_delete(decoder);
+    gCtl.running = false;
+    LOGI("FLAC engine finished");
+}
+
+// ─── Media Playback Thread (AMediaCodec) ─────────────────────────────────────
+
+void mediaPlaybackThread() {
+    int fd = open(gCtl.path, O_RDONLY);
+    if (fd < 0) { gCtl.running = false; return; }
+
+    AMediaExtractor *extractor = AMediaExtractor_new();
+    off64_t fileLen = lseek64(fd, 0, SEEK_END);
+    lseek64(fd, 0, SEEK_SET);
+    if (AMediaExtractor_setDataSourceFd(extractor, fd, 0, fileLen) != AMEDIA_OK) {
+        AMediaExtractor_delete(extractor); close(fd); gCtl.running = false; return;
+    }
+
+    int32_t audioTrack = -1, sr = 0, ch = 0;
+    int64_t durationUs = 0;
+    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
+        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
+        const char *m = NULL;
+        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+        if (m && strncmp(m, "audio/", 6) == 0) {
+            audioTrack = i;
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+            AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durationUs);
+            AMediaFormat_delete(fmt); break;
+        }
+        AMediaFormat_delete(fmt);
+    }
+    if (audioTrack < 0) { AMediaExtractor_delete(extractor); close(fd); gCtl.running = false; return; }
+
+    AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
+    const char *mime = NULL;
+    AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
+    AMediaExtractor_selectTrack(extractor, audioTrack);
+
+    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
+    if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
+        AMediaCodec_start(codec) != AMEDIA_OK) {
+        if (codec) AMediaCodec_delete(codec);
+        AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor); close(fd);
+        gCtl.running = false; return;
+    }
+    AMediaFormat_delete(trackFmt);
+
+    gCtl.sampleRate = sr;
+    gCtl.channels = ch;
+    gCtl.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
+    gCtl.writtenFrames = 0;
+    gCtl.outChannels = ch;
+
+    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+    if (!gCtl.stream) {
+        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+        AMediaExtractor_delete(extractor); close(fd);
+        gCtl.running = 0; return;
+    }
+    gCtl.running = 1;
+
+    bool inputDone = false, outputDone = false;
+    int32_t outCh = ch;
+    int32_t threshold = RingBuffer::pacingThreshold(ch);
+
+    uint64_t _stopMedia = 0;
+    while (read(gCtl.stopFd, &_stopMedia, sizeof(_stopMedia)) <= 0) {
+        _stopMedia = 0;
+        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        if (seek >= 0 && sr > 0) {
+            int64_t seekUs = seek * 1000000 / sr;
+            AMediaExtractor_seekTo(extractor, seekUs, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
+            AMediaCodec_flush(codec);
+            inputDone = false;
+            outputDone = false;
+            gCtl.writtenFrames = seek;
+            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+        }
+
+        if (outputDone && !gCtl.paused) break;
+
+        // Pacing
+        if (gCtl.ringBuf && gCtl.ringBuf->available(outCh) > threshold && !gCtl.paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        if (!inputDone && !gCtl.paused) {
+            ssize_t inIdx = AMediaCodec_dequeueInputBuffer(codec, 10000);
+            if (inIdx >= 0) {
+                size_t inSize;
+                uint8_t *inBuf = AMediaCodec_getInputBuffer(codec, inIdx, &inSize);
+                if (inBuf) {
+                    ssize_t sampleSize = AMediaExtractor_readSampleData(extractor, inBuf, inSize);
+                    if (sampleSize < 0) {
+                        AMediaCodec_queueInputBuffer(codec, inIdx, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else {
+                        AMediaCodec_queueInputBuffer(codec, inIdx, 0, sampleSize, AMediaExtractor_getSampleTime(extractor), 0);
+                        AMediaExtractor_advance(extractor);
+                    }
+                }
+            }
+        }
+
+        AMediaCodecBufferInfo info;
+        ssize_t outIdx = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
+
+        if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
+            if (!gCtl.stream) {
+                AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
+                gCtl.outChannels = outCh;
+                gCtl.stream = createAAudioStreamCallback(sr, outCh, aaudioDataCallback, nullptr);
+            }
+            AMediaFormat_delete(newFmt);
+            continue;
+        }
+
+        if (outIdx >= 0) {
+            bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
+            if (eos) outputDone = true;
+
+            if (info.size > 0 && gCtl.stream && !gCtl.paused) {
+                size_t outSize;
+                uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
+                if (outBuf) {
+                    outBuf += info.offset;
+                    int32_t totalS = info.size / 2;
+                    int32_t frames = totalS / outCh;
+                    float *fb = new float[totalS];
+                    for (int32_t i = 0; i < totalS; i++) {
+                        int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
+                        fb[i] = vs / 32768.0f;
+                    }
+                    if (gCtl.ringBuf) {
+                        gCtl.ringBuf->push(fb, frames, outCh);
+                    }
+                    delete[] fb;
+                    gCtl.writtenFrames += frames;
+                }
+            }
+            AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
+
+            if (gCtl.paused && inputDone && eos) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } else if (outIdx == AMEDIACODEC_INFO_TRY_AGAIN_LATER ||
+                   outIdx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
+            if (gCtl.paused && inputDone) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Drain ring buffer
+    if (outputDone && gCtl.ringBuf) {
+        while (gCtl.running && gCtl.ringBuf->available(outCh) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
+    AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+    AMediaExtractor_delete(extractor); close(fd);
+    gCtl.running = false;
+    LOGI("Media engine finished");
+}
