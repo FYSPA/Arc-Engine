@@ -4,7 +4,7 @@
   <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/android/android.png" alt="Android" width="80" />
   <br>
   <br>
-  <h1>ARC Audio Engine</h1>
+  <h1>Arc Audio Engine (AAE)</h1>
   <p>
     <strong>Plugin nativo de Flutter para reproducción multi-formato en Android</strong>
   </p>
@@ -33,7 +33,7 @@
 
 ## 📖 Acerca del Proyecto
 
-**Audio Engine** es un plugin de Flutter de alto rendimiento que lleva la **decodificación y reproducción de audio multi-formato** al ecosistema Flutter en Android, utilizando **FFI** (Foreign Function Interface) para comunicarse directamente con código nativo C++.
+**Arc Audio Engine (AAE)** es un plugin de Flutter de alto rendimiento que lleva la **decodificación y reproducción de audio multi-formato** al ecosistema Flutter en Android, utilizando **FFI** (Foreign Function Interface) para comunicarse directamente con código nativo C++.
 
 Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAudio callback. Este plugin permite a los desarrolladores Flutter:
 

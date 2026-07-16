@@ -4,7 +4,7 @@
   <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/android/android.png" alt="Android" width="80" />
   <br>
   <br>
-  <h1>ARC Audio Engine</h1>
+  <h1>Arc Audio Engine (AAE)</h1>
   <p>
     <strong>Native multi-format audio playback for Flutter on Android</strong>
   </p>
@@ -31,7 +31,7 @@
 
 A high-performance Flutter plugin that brings **native multi-format audio playback** to Android using **FFI** (Foreign Function Interface).
 
-Audio Engine supports **FLAC, WAV, MP3, AAC, and OGG** formats with low-latency AAudio callback output. This plugin allows Flutter developers to:
+Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with low-latency AAudio callback output. This plugin allows Flutter developers to:
 
 - **Play** FLAC, WAV, MP3, AAC, and OGG files natively
 - **Pause / Resume / Seek / Stop** controls with slider UI

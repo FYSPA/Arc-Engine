@@ -4,7 +4,7 @@
   <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/android/android.png" alt="Android" width="80" />
   <br>
   <br>
-  <h1>Contributing to Audio Engine</h1>
+  <h1>Contributing to Arc Audio Engine (AAE)</h1>
   <p>
     <strong>Guidelines for contributing to the native multi-format audio playback plugin for Flutter on Android</strong>
   </p>
@@ -30,7 +30,7 @@
 
 ## 📖 How to Contribute
 
-Thank you for your interest in contributing to **Audio Engine**! This project is a Flutter plugin that provides native multi-format audio playback for Android via FFI.
+Thank you for your interest in contributing to **Arc Audio Engine (AAE)**! This project is a Flutter plugin that provides native multi-format audio playback for Android via FFI.
 
 We welcome any kind of contribution, whether it's reporting a bug, suggesting an improvement, or submitting code.
 
@@ -181,7 +181,7 @@ If you have questions about contributing, feel free to:
 - Open an issue with the `question` label
 - Contact the maintainer: **FYSPA**
 
-Thank you for making Audio Engine a better project!
+Thank you for making Arc Audio Engine (AAE) a better project!
 
 ---
 
