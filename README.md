@@ -362,7 +362,7 @@ Distributed under the MIT License.
     Made with <strong>Flutter</strong> + <strong>C++</strong> + <strong>FLAC</strong>
   </p>
   <p>
-    <a href="https://github.com/your-org/audio_engine">Back to Plugin</a>
+    <a href="https://github.com/FYSPA/audio_engine">Back to Plugin</a>
   </p>
   <br>
 </div>
