@@ -22,8 +22,8 @@ AAudioStream* createAAudioStream(int32_t sampleRate, int32_t channels) {
 
 void closeAAudioStream(AAudioStream *stream) {
     if (!stream) return;
-    AAudioStream_waitForStateChange(stream, AAUDIO_STREAM_STATE_STOPPING, NULL, 5000000000LL);
     AAudioStream_requestStop(stream);
+    AAudioStream_waitForStateChange(stream, AAUDIO_STREAM_STATE_STOPPING, NULL, 5000000000LL);
     AAudioStream_close(stream);
 }
 

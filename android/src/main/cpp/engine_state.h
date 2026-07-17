@@ -26,6 +26,9 @@ struct EngineState {
     RingBuffer *ringBuf{nullptr};
     int32_t outChannels{0};
 
+    // Secondary ring buffer for PCM streaming to Dart
+    RingBuffer *pcmRingBuf{nullptr};
+
     // Stop eventfd: kernel-based cross-thread signaling (created before thread spawn)
     int stopFd{-1};
 

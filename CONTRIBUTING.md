@@ -20,7 +20,7 @@
   </p>
   <div align="center">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <img src="https://img.shields.io/badge/Flutter-3.4+-02569B?logo=flutter" alt="Flutter 3.4+" />
+    <img src="https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter" alt="Flutter 3.44" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
   </div>
   <br>
@@ -55,8 +55,8 @@ If you find a bug or have a suggestion:
 ```bash
 # 1. Fork the repository
 # 2. Clone your fork
-git clone https://github.com/your-username/audio_engine.git
-cd audio_engine
+git clone https://github.com/FYSPA/Arc-Engine.git
+cd Arc-Engine
 
 # 3. Create a branch for your change
 git checkout -b feature/short-descriptive-name
@@ -92,7 +92,7 @@ git push origin feature/short-descriptive-name
 
 ### Requirements
 
-- Flutter SDK `>=3.4.0`
+- Flutter SDK `3.44.5`
 - Android NDK (included with Android Studio)
 - Android device or emulator with API 27+
 

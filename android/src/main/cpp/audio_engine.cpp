@@ -66,4 +66,15 @@ EXPORT int32_t is_playing() {
     return gCtl.running ? 1 : 0;
 }
 
+EXPORT int32_t get_pcm_available() {
+    if (!gCtl.running || !gCtl.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    return gCtl.pcmRingBuf->available(gCtl.outChannels);
+}
+
+EXPORT int32_t read_pcm_samples(float *out, int32_t maxFrames) {
+    if (!gCtl.running || !gCtl.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    int32_t frames = gCtl.pcmRingBuf->pop(out, maxFrames, gCtl.outChannels);
+    return frames * gCtl.outChannels; // return total samples written
+}
+
 }

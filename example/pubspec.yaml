@@ -11,7 +11,13 @@ dependencies:
     sdk: flutter
 
   audio_engine:
-    path: ../ # ← Aquí SÍ va, porque el example USA el plugin
+    path: ../
+  file_picker: ^8.0.0
+  shared_preferences: ^2.2.0
+  path_provider: ^2.1.6
+
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.20
 
 dev_dependencies:
   flutter_test:

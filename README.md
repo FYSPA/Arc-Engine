@@ -13,13 +13,16 @@
     <a href="#-features">Features</a> •
     <a href="#-how-it-works">How It Works</a> •
     <a href="#-getting-started">Getting Started</a> •
-    <a href="#-project-structure">Structure</a> •
     <a href="#-usage">Usage</a> •
     <a href="#-tech-stack">Tech Stack</a>
   </p>
+   <p>
+    <a href="README.es.md">Leer en Español</a> •
+    <a href="./CONTRIBUTING.md">Contributing</a>
+  </p>
   <div align="center">
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <img src="https://img.shields.io/badge/Flutter-3.4+-02569B?logo=flutter" alt="Flutter 3.4+" />
+    <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+    <img src="https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter" alt="Flutter 3.44" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
   </div>
   <br>
@@ -31,15 +34,16 @@
 
 A high-performance Flutter plugin that brings **native multi-format audio playback** to Android using **FFI** (Foreign Function Interface).
 
-Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with low-latency AAudio callback output. This plugin allows Flutter developers to:
+Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with low-latency AAudio callback output. It also supports **URL streaming** via Android MediaExtractor (API 29+) with automatic fallback to download-then-play on older devices.
 
 - **Play** FLAC, WAV, MP3, AAC, and OGG files natively
+- **Stream** audio from HTTP URLs
 - **Pause / Resume / Seek / Stop** controls with slider UI
 - Low-latency AAudio **callback mode** with lock-free **SPSC ring buffer**
 - **eventfd** kernel-based cross-thread signaling for reliable controls
 - Pure C++ native code — no Java/Kotlin bridge overhead
 
-> **Note:** Uses `libFLAC` (decoding), `AAudio` (low-latency audio), `AMediaCodec` (MP3/AAC/OGG), and custom WAV parser — all via **dart:ffi**!
+> **Note:** Uses `libFLAC` (decoding), `AAudio` (low-latency audio), `AMediaCodec` / `AMediaExtractor` (MP3/AAC/OGG streaming), and custom WAV parser — all via **dart:ffi**!
 
 ---
 
@@ -47,8 +51,12 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 
 <table>
   <tr>
-    <td><strong>Multi-format</strong></td>
+    <td><strong>Multi-format Playback</strong></td>
     <td>FLAC (libFLAC), WAV (native parser), MP3/AAC/OGG (AMediaCodec)</td>
+  </tr>
+  <tr>
+    <td><strong>URL Streaming</strong></td>
+    <td>Native HTTP streaming (API 29+) with download-then-play fallback for older devices. Configurable URL dialog with progress bar and cancel.</td>
   </tr>
   <tr>
     <td><strong>Native Playback</strong></td>
@@ -59,12 +67,16 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
     <td>Pause / Resume / Seek / Stop with eventfd kernel signaling</td>
   </tr>
   <tr>
-    <td><strong>FFI Bridge</strong></td>
-    <td>Direct C++ to Dart communication — no platform channels overhead</td>
+    <td><strong>PCM Stream to Dart</strong></td>
+    <td>Real-time raw PCM samples stream for visualization (VU meter, waveform)</td>
   </tr>
   <tr>
-    <td><strong>Android Only</strong></td>
-    <td>Optimized for Android with AAudio and NDK (API 27+)</td>
+    <td><strong>File Picker</strong></td>
+    <td>Import audio files via SAF file picker (FLAC, WAV, MP3, AAC, OGG, M4A)</td>
+  </tr>
+  <tr>
+    <td><strong>FFI Bridge</strong></td>
+    <td>Direct C++ to Dart communication — no platform channels overhead</td>
   </tr>
   <tr>
     <td><strong>Low Latency</strong></td>
@@ -81,8 +93,9 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 │                     Flutter (Dart)                            │
 │  ┌───────────────────────────────────────────────────────┐   │
 │  │         AudioEngine (audio_engine.dart)                │   │
-│  │  startAudio() │ stop() │ pause() │ resume() │ seek()   │   │
-│  └───────────────┴────────┴─────────┴──────────┴────────┘   │
+│  │  startAudio() │ streamUrl() │ stop() │ pause()        │   │
+│  │  resume() │ seek() │ startPcmStream()                  │   │
+│  └───────────────┴────────────┴─────────┴────────────────┘   │
 │                          │ dart:ffi                          │
 └──────────────────────────┼──────────────────────────────────┘
                            ▼
@@ -95,13 +108,15 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 │  │          │  │ reset)       │  │  │wavPlaybackThread│  │   │
 │  │start_    │  └──────┬───────┘  │  │flacPlayback    │  │   │
 │  │audio()   │         │ eventfd  │  │Thread          │  │   │
-│  │          │         ▼ stop sig │  │mediaPlayback   │  │   │
-│  └──────────┘  ┌──────────┐     │  │Thread          │  │   │
-│                │aaudio_   │     │  └────────┬───────┘  │   │
-│                │utils     │     │           │          │   │
-│                │(create,  │     │           ▼          │   │
-│                │ close)   │     │  ┌────────────────┐  │   │
-│                └──────────┘     │  │  Ring Buffer   │  │   │
+│  │start_    │         ▼ stop sig │  │mediaPlayback   │  │   │
+│  │media_    │  ┌──────────┐     │  │Thread          │  │   │
+│  │stream()  │  │aaudio_   │     │  │mediaStream     │  │   │
+│  └──────────┘  │utils     │     │  │PlaybackThread  │  │   │
+│                │(create,  │     │  └────────┬───────┘  │   │
+│                │ close)   │     │           │          │   │
+│                └──────────┘     │           ▼          │   │
+│                                 │  ┌────────────────┐  │   │
+│                                 │  │  Ring Buffer   │  │   │
 │                                 │  │ (SPSC lock-free)│  │   │
 │                                 │  └────────┬───────┘  │   │
 │                                 └───────────┼──────────┘   │
@@ -124,9 +139,9 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 
 ### Data Flow
 
-1. **Dart** calls `AudioEngine.startAudio(path)` via FFI
-2. **dispatcher.cpp** parses the file extension and delegates to the appropriate format handler
-3. **Parser thread** (WAV/FLAC/Media) decodes audio and pushes float PCM samples into the **lock-free SPSC ring buffer**
+1. **Dart** calls `AudioEngine.startAudio(path)` or `AudioEngine.streamUrl(url)` via FFI
+2. **dispatcher.cpp** routes to the appropriate handler (local file by extension, or URL stream via MediaExtractor)
+3. **Decoder thread** (WAV/FLAC/Media/Stream) decodes audio and pushes float PCM samples into the **lock-free SPSC ring buffer**
 4. **AAudio callback** (`aaudioDataCallback`) runs in a high-priority audio thread, pops samples from the ring buffer, and writes them to the audio device
 5. **Controls** (stop/pause/seek) use **eventfd** kernel signaling for reliable cross-thread communication
 
@@ -136,9 +151,8 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 
 ### Prerequisites
 
-- Flutter SDK `>=3.4.0` (compatible with Dart `>=3.4.0`)
+- Flutter SDK `3.44.5` (compatible with Dart `>=3.12.2`)
 - Android device or emulator running **API 27+** (AAudio requirement)
-- A **FLAC audio file** on your device
 
 ### Installation
 
@@ -157,39 +171,36 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
    flutter run
    ```
 
-4. **Push a test FLAC file** to your device (or use a file manager):
+4. **Add audio files** using the **Pick Files** button in the app, or push files via adb:
    ```bash
-   adb push /path/to/test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
+   adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
    ```
-   The example app looks for a file named `test.flac` at that location.
+   > The app uses `path_provider` for internal storage and `file_picker` (SAF) for importing audio files, bypassing Android 11+ scoped storage restrictions.
+
+### Using as a Dependency
+
+Add to your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  audio_engine:
+    path: ./audio_engine
+```
 
 ---
 
 ## 📁 Project Structure
 
 ```
-example/
-├── android/                          # Android platform files (Flutter)
-├── lib/
-│   └── main.dart                     # Example app UI
-├── test/
-│   └── widget_test.dart              # Widget tests
-├── pubspec.yaml                      # Package configuration
-└── README.md                         # You are here
-```
-
-### Key Files in the Plugin
-
-```
 audio_engine/                          # Root plugin package
 ├── lib/
-│   └── audio_engine.dart              # Dart FFI bindings
+│   └── audio_engine.dart              # Dart FFI bindings (public API)
 ├── android/src/main/cpp/
 │   ├── CMakeLists.txt                 # Native build config
 │   ├── audio_engine.cpp               # AAudio callback + FFI exports
-│   ├── dispatcher.cpp/.h              # Format dispatch (start_audio, play_audio)
+│   ├── dispatcher.cpp/.h              # Format dispatch (start_audio, start_media_stream)
 │   ├── engine_state.cpp/.h            # Global state (gCtl) + stopEngine/resetCtl
-│   ├── engine_threads.cpp/.h          # Decoder threads (WAV/FLAC/Media)
+│   ├── engine_threads.cpp/.h          # Decoder threads (WAV/FLAC/Media/Stream)
 │   ├── aaudio_utils.cpp/.h            # AAudio stream creation/management
 │   ├── ring_buffer.h                  # Lock-free SPSC ring buffer
 │   ├── wav_handler.cpp/.h             # Legacy WAV blocking playback
@@ -200,14 +211,26 @@ audio_engine/                          # Root plugin package
 │       ├── include/                   #   FLAC/Ogg headers
 │       ├── arm64-v8a/                 #   libFLAC.a + libogg.a (64-bit)
 │       └── armeabi-v7a/               #   libFLAC.a + libogg.a (32-bit)
-└── pubspec.yaml                       # Plugin manifest
+├── example/                           # Flutter example app
+│   └── lib/
+│       ├── main.dart                  # App entry point
+│       └── widgets/
+│           ├── home_screen.dart       # Main UI (file list, controls, streaming)
+│           ├── audio_controls.dart    # Legacy format buttons (unused)
+│           ├── library_status_card.dart
+│           ├── pcm_visualizer.dart    # VU meter + waveform
+│           └── status_display.dart    # Animated status messages
+├── LICENSE.md
+├── CONTRIBUTING.md
+├── ROADMAP.md
+└── README.md
 ```
 
 ---
 
 ## 🎮 Usage
 
-### Starting Playback (non-blocking engine)
+### Starting Local Playback (non-blocking engine)
 
 ```dart
 import 'package:audio_engine/audio_engine.dart';
@@ -215,6 +238,34 @@ import 'package:audio_engine/audio_engine.dart';
 // Start playback (returns immediately, plays in background thread)
 int result = AudioEngine.startAudio('/path/to/file.wav');
 if (result == 0) print('Playback started!');
+```
+
+### URL Streaming
+
+```dart
+// Try native streaming (returns 0 on success, negative on error)
+int result = AudioEngine.streamUrl('https://example.com/audio.mp3');
+if (result == 0) {
+  print('Streaming...');
+} else {
+  print('Streaming unavailable, use download fallback');
+}
+```
+
+> Native streaming requires Android API 29+. On older devices, `streamUrl()` returns an error code and you should fall back to download-then-play.
+
+### PCM Stream for Visualization
+
+```dart
+// Get a broadcast stream of raw PCM float samples
+Stream<List<double>> pcmStream = AudioEngine.startPcmStream(
+  interval: Duration(milliseconds: 50),  // update interval
+);
+
+pcmStream.listen((samples) {
+  // samples is a List<double> of interleaved float PCM (-1.0 to 1.0)
+  updateVisualizer(samples);
+});
 ```
 
 ### Controls
@@ -240,7 +291,7 @@ int dur = AudioEngine.getDuration();    // Total duration in ms
 |:----:|-------------------------------------|
 | `0`  | Success                             |
 | `-1` | File not found / no extension       |
-| `-2` | Invalid WAV RIFF header             |
+| `-2` | Invalid WAV RIFF header / Streaming not supported on this device |
 | `-3` | Invalid WAV fmt chunk               |
 | `-4` | Unsupported WAV format              |
 | `-5` | WAV no fmt chunk                    |
@@ -299,6 +350,26 @@ int dur = AudioEngine.getDuration();    // Total duration in ms
       <td><strong>AMediaCodec</strong> (NDK)</td>
       <td>MP3, AAC, OGG playback</td>
     </tr>
+    <tr>
+      <td>URL Streaming</td>
+      <td><strong>AMediaExtractor</strong> (NDK)</td>
+      <td>HTTP audio streaming (API 29+)</td>
+    </tr>
+    <tr>
+    <td>File Picker</td>
+    <td><strong>file_picker</strong></td>
+    <td>SAF-based audio file import</td>
+    </tr>
+    <tr>
+      <td>Preferences</td>
+      <td><strong>shared_preferences</strong></td>
+      <td>Persist last stream URL</td>
+    </tr>
+    <tr>
+      <td>App Storage</td>
+      <td><strong>path_provider</strong></td>
+      <td>Internal documents directory</td>
+    </tr>
   </table>
 </div>
 
@@ -306,15 +377,19 @@ int dur = AudioEngine.getDuration();    // Total duration in ms
 
 ## 📸 Example App Preview
 
-The example app provides a simple UI with:
+The example app provides a full-featured UI with:
 
-- **Format buttons** — play FLAC, WAV, MP3, AAC, or OGG test files
+- **File picker** — import audio files via SAF system picker (copies to app directory)
+- **Stream from URL** — dialog to enter any direct audio URL (with persist and history)
+- **Download progress** — progress bar with cancel button during stream fallback
+- **Local file playback** — tap any file to play (FLAC, WAV, MP3, AAC, OGG, M4A)
 - **Seek slider** — drag to seek within the audio
 - **Pause / Resume / Stop** controls
-- **Status display** — shows current playback state
+- **PCM visualizer** — real-time VU meter and waveform from decoded samples
+- **Status display** — animated status messages
+- **File picker** — Pick Files button to import audio via SAF
 
-> Test files are expected at:  
-> `/storage/emulated/0/Android/data/com.example.audio_engine_example/files/`
+> The app stores its audio files in the directory returned by `getApplicationDocumentsDirectory()` (`path_provider`).
 
 ---
 
@@ -322,7 +397,7 @@ The example app provides a simple UI with:
 
 ### Why use eventfd instead of std::atomic for signaling?
 
-On certain Android devices (e.g., Moto E6 Play with Snapdragon 427), the `std::thread` constructor's memory barrier fails to make the creating thread's writes visible to the new thread. Neither `std::atomic`, `volatile`, nor `std::atomic_thread_fence` worked reliably across threads. eventfd is a kernel-level syscall that guarantees proper memory ordering, making cross-thread signaling reliable regardless of platform memory model bugs.
+On certain Android devices (e.g., Moto E6 Play with MediaTek MT6739), the `std::thread` constructor's memory barrier fails to make the creating thread's writes visible to the new thread. Neither `std::atomic`, `volatile`, nor `std::atomic_thread_fence` worked reliably across threads. eventfd is a kernel-level syscall that guarantees proper memory ordering, making cross-thread signaling reliable regardless of platform memory model bugs.
 
 ### Why AAudio callback instead of blocking writes?
 
@@ -336,17 +411,17 @@ A lock-free Single-Producer Single-Consumer (SPSC) ring buffer with 65536 sample
 
 FLAC (via libFLAC), WAV (native parser), MP3, AAC, and OGG (via AMediaCodec). WAV uses a custom zero-copy parser, FLAC uses the reference libFLAC decoder, and compressed formats use Android's AMediaCodec NDK API.
 
+### Does URL streaming work on all devices?
+
+Native URL streaming via `AMediaExtractor_setDataSource()` requires **Android API 29+**. On older devices or devices where native streaming fails, the example app falls back to downloading the file and playing it locally. You can also implement your own download-then-play flow by detecting the error code.
+
 ### What Android API level is required?
 
 API 27+ is required for AAudio. The plugin uses AAudio's callback mode which was stabilized in Android 8.1 (API 27).
 
-### How do I test playback?
+### How do I add audio files from my device?
 
-Push a test file to the device and tap the corresponding format button in the example app:
-
-```bash
-adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
-```
+Use the **Pick Files** button (bottom card) to open the system file picker. On Android 11+, this uses the Storage Access Framework (SAF) which bypasses scoped storage restrictions. Selected files are copied to the app's internal directory for playback. You can select multiple audio files at once.
 
 ---
 
@@ -362,7 +437,8 @@ Distributed under the MIT License.
     Made with <strong>Flutter</strong> + <strong>C++</strong> + <strong>FLAC</strong>
   </p>
   <p>
-    <a href="https://github.com/FYSPA/audio_engine">Back to Plugin</a>
+    <a href="./CONTRIBUTING.md">Contributing</a> •
+    <a href="./ROADMAP.md">Roadmap</a>
   </p>
   <br>
 </div>

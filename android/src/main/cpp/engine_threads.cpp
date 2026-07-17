@@ -93,6 +93,9 @@ void wavPlaybackThread() {
             int32_t pushed = gCtl.ringBuf->push(floatBuf, chunk, ch);
             gCtl.writtenFrames += pushed;
         }
+        if (gCtl.pcmRingBuf) {
+            gCtl.pcmRingBuf->push(floatBuf, chunk, ch);
+        }
     }
 
     LOGI("WAV loop exit: running=%d wf=%lld total=%lld",
@@ -328,6 +331,9 @@ void mediaPlaybackThread() {
                     if (gCtl.ringBuf) {
                         gCtl.ringBuf->push(fb, frames, outCh);
                     }
+                    if (gCtl.pcmRingBuf) {
+                        gCtl.pcmRingBuf->push(fb, frames, outCh);
+                    }
                     delete[] fb;
                     gCtl.writtenFrames += frames;
                 }
@@ -358,4 +364,176 @@ void mediaPlaybackThread() {
     AMediaExtractor_delete(extractor); close(fd);
     gCtl.running = false;
     LOGI("Media engine finished");
+}
+
+// ─── Media Streaming Thread (URL-based AMediaExtractor) ────────────────────
+
+void mediaStreamPlaybackThread() {
+    AMediaExtractor *extractor = AMediaExtractor_new();
+    media_status_t setStatus = AMediaExtractor_setDataSource(extractor, gCtl.path);
+    if (setStatus != AMEDIA_OK) {
+        AMediaExtractor_delete(extractor);
+        LOGE("Media stream: setDataSource failed: status=%d url=%s", setStatus, gCtl.path);
+        gCtl.running = false; return;
+    }
+
+    int32_t audioTrack = -1, sr = 0, ch = 0;
+    int64_t durationUs = 0;
+    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
+        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
+        const char *m = NULL;
+        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+        if (m && strncmp(m, "audio/", 6) == 0) {
+            audioTrack = i;
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+            AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durationUs);
+            AMediaFormat_delete(fmt); break;
+        }
+        AMediaFormat_delete(fmt);
+    }
+    if (audioTrack < 0) { AMediaExtractor_delete(extractor); gCtl.running = false; return; }
+
+    AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
+    const char *mime = NULL;
+    AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
+    AMediaExtractor_selectTrack(extractor, audioTrack);
+
+    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
+    if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
+        AMediaCodec_start(codec) != AMEDIA_OK) {
+        if (codec) AMediaCodec_delete(codec);
+        AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor);
+        gCtl.running = false; return;
+    }
+    AMediaFormat_delete(trackFmt);
+
+    gCtl.sampleRate = sr;
+    gCtl.channels = ch;
+    gCtl.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
+    gCtl.writtenFrames = 0;
+    gCtl.outChannels = ch;
+
+    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+    if (!gCtl.stream) {
+        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+        AMediaExtractor_delete(extractor);
+        gCtl.running = 0; return;
+    }
+    gCtl.running = 1;
+
+    bool inputDone = false, outputDone = false;
+    int32_t outCh = ch;
+    int32_t threshold = RingBuffer::pacingThreshold(ch);
+
+    LOGI("Media stream started: %s sr=%d ch=%d", gCtl.path, sr, ch);
+
+    uint64_t _stopVal = 0;
+    while (read(gCtl.stopFd, &_stopVal, sizeof(_stopVal)) <= 0) {
+        _stopVal = 0;
+        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        if (seek >= 0 && sr > 0 && gCtl.totalFrames > 0) {
+            int64_t seekUs = seek * 1000000 / sr;
+            AMediaExtractor_seekTo(extractor, seekUs, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
+            AMediaCodec_flush(codec);
+            inputDone = false;
+            outputDone = false;
+            gCtl.writtenFrames = seek;
+            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+        }
+
+        if (outputDone && !gCtl.paused) break;
+
+        if (gCtl.ringBuf && gCtl.ringBuf->available(outCh) > threshold && !gCtl.paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        if (!inputDone && !gCtl.paused) {
+            ssize_t inIdx = AMediaCodec_dequeueInputBuffer(codec, 10000);
+            if (inIdx >= 0) {
+                size_t inSize;
+                uint8_t *inBuf = AMediaCodec_getInputBuffer(codec, inIdx, &inSize);
+                if (inBuf) {
+                    ssize_t sampleSize = AMediaExtractor_readSampleData(extractor, inBuf, inSize);
+                    if (sampleSize < 0) {
+                        AMediaCodec_queueInputBuffer(codec, inIdx, 0, 0, 0, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else {
+                        int64_t sampleTime = AMediaExtractor_getSampleTime(extractor);
+                        AMediaCodec_queueInputBuffer(codec, inIdx, 0, sampleSize, sampleTime, 0);
+                        AMediaExtractor_advance(extractor);
+                        if (gCtl.totalFrames > 0 && sr > 0 && sampleTime > 0) {
+                            gCtl.writtenFrames = sampleTime * sr / 1000000;
+                        }
+                    }
+                }
+            }
+        }
+
+        AMediaCodecBufferInfo info;
+        ssize_t outIdx = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
+
+        if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
+            if (!gCtl.stream) {
+                AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
+                gCtl.outChannels = outCh;
+                gCtl.stream = createAAudioStreamCallback(sr, outCh, aaudioDataCallback, nullptr);
+            }
+            AMediaFormat_delete(newFmt);
+            continue;
+        }
+
+        if (outIdx >= 0) {
+            bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
+            if (eos) outputDone = true;
+
+            if (info.size > 0 && gCtl.stream && !gCtl.paused) {
+                size_t outSize;
+                uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
+                if (outBuf) {
+                    outBuf += info.offset;
+                    int32_t totalS = info.size / 2;
+                    int32_t frames = totalS / outCh;
+                    float *fb = new float[totalS];
+                    for (int32_t i = 0; i < totalS; i++) {
+                        int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
+                        fb[i] = vs / 32768.0f;
+                    }
+                    if (gCtl.ringBuf) {
+                        gCtl.ringBuf->push(fb, frames, outCh);
+                    }
+                    if (gCtl.pcmRingBuf) {
+                        gCtl.pcmRingBuf->push(fb, frames, outCh);
+                    }
+                    delete[] fb;
+                }
+            }
+            AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
+
+            if (gCtl.paused && inputDone && eos) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } else if (outIdx == AMEDIACODEC_INFO_TRY_AGAIN_LATER ||
+                   outIdx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
+            if (gCtl.paused && inputDone) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Drain ring buffer
+    if (outputDone && gCtl.ringBuf) {
+        while (gCtl.running && gCtl.ringBuf->available(outCh) > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
+    AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+    AMediaExtractor_delete(extractor);
+    gCtl.running = false;
+    LOGI("Media stream finished");
 }

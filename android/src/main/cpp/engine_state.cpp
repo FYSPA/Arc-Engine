@@ -19,6 +19,7 @@ void resetCtl() {
     gCtl.wavDataSize = gCtl.wavFrameSize = 0;
     gCtl.path[0] = 0;
     gCtl.ringBuf = nullptr;
+    gCtl.pcmRingBuf = nullptr;
     gCtl.outChannels = 0;
     gCtl.callbackCount = 0;
     gCtl.callbackFramesTotal = 0;
@@ -30,6 +31,7 @@ static void cleanupEngine() {
     if (gCtl.wavData) { delete[] gCtl.wavData; gCtl.wavData = nullptr; }
     gCtl.wavDataSize = gCtl.wavFrameSize = 0;
     if (gCtl.ringBuf) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; }
+    if (gCtl.pcmRingBuf) { delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; }
     if (gCtl.stopFd >= 0) { close(gCtl.stopFd); gCtl.stopFd = -1; }
 }
 

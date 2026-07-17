@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'package:ffi/ffi.dart';
@@ -40,6 +41,10 @@ class AudioEngine {
   // Engine controls
   static final _startAudio = _lib.lookupFunction<Int32 Function(Pointer<Utf8>),
       int Function(Pointer<Utf8>)>('start_audio');
+
+  static final _startMediaStream = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('start_media_stream');
 
   static final _stopAudio =
       _lib.lookupFunction<Void Function(), void Function()>('stop_audio');
@@ -132,6 +137,18 @@ class AudioEngine {
     }
   }
 
+  /// Stream audio from a URL. Supports MP3, AAC, OGG (formats supported by AMediaCodec).
+  /// Internally uses Android's MediaExtractor with HTTP/HTTPS datasource.
+  /// Returns 0 on success, negative on error.
+  static int streamUrl(String url) {
+    final urlPtr = url.toNativeUtf8();
+    try {
+      return _startMediaStream(urlPtr);
+    } finally {
+      calloc.free(urlPtr);
+    }
+  }
+
   static void stop() => _stopAudio();
 
   static void pause() => _pauseAudio();
@@ -145,4 +162,55 @@ class AudioEngine {
   static int getDuration() => _getDuration();
 
   static bool get isPlaying => _isPlaying() != 0;
+
+  // ─── PCM Stream (extract raw samples to Dart) ──────────────────────────
+
+  static final _getPcmAvailable = _lib
+      .lookupFunction<Int32 Function(), int Function()>('get_pcm_available');
+
+  static final _readPcmSamples = _lib.lookupFunction<
+      Int32 Function(Pointer<Float>, Int32),
+      int Function(Pointer<Float>, int)>('read_pcm_samples');
+
+  static int getPcmAvailable() => _getPcmAvailable();
+
+  static int readPcmSamples(Pointer<Float> buffer, int maxFrames) =>
+      _readPcmSamples(buffer, maxFrames);
+
+  /// Start a stream of raw PCM float samples from the active playback.
+  /// Samples are interleaved stereo [L, R, L, R, ...] in [-1.0, 1.0].
+  /// Returns a broadcast stream that emits available frames every [interval].
+  /// Call [stopPcmStream] to cancel.
+  static Stream<List<double>> startPcmStream({
+    Duration interval = const Duration(milliseconds: 50),
+  }) {
+    bool active = true;
+    final controller = StreamController<List<double>>.broadcast(
+      onCancel: () {
+        active = false;
+      },
+    );
+
+    Timer.periodic(interval, (timer) {
+      if (!active) {
+        timer.cancel();
+        return;
+      }
+      if (!isPlaying) return;
+      int available = getPcmAvailable();
+      if (available <= 0) return;
+      if (available > 512) available = 512;
+      final buffer = calloc<Float>(available * 2);
+      final samplesRead = readPcmSamples(buffer, available);
+      if (samplesRead > 0) {
+        final count = samplesRead < 1024 ? samplesRead : 1024;
+        final samples =
+            List<double>.generate(count, (i) => buffer[i].toDouble());
+        controller.add(samples);
+      }
+      calloc.free(buffer);
+    });
+
+    return controller.stream;
+  }
 }

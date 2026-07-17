@@ -72,6 +72,9 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     if (gCtl.ringBuf) {
         gCtl.ringBuf->push(floatBuf, frames, channels);
     }
+    if (gCtl.pcmRingBuf) {
+        gCtl.pcmRingBuf->push(floatBuf, frames, channels);
+    }
 
     gCtl.writtenFrames += frames;
 

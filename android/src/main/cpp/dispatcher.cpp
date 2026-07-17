@@ -81,8 +81,9 @@ int32_t start_audio(const char* path) {
         gCtl.totalFrames = gCtl.wavDataSize / gCtl.wavFrameSize;
         gCtl.writtenFrames = 0;
         gCtl.ringBuf = new RingBuffer();
+        gCtl.pcmRingBuf = new RingBuffer();
     gCtl.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; return -8; }
+    if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; return -8; }
     gCtl.format = AudioFormat::WAV;
     gCtl.running = 1;
         gCtl.worker = std::thread(wavPlaybackThread);
@@ -91,8 +92,9 @@ int32_t start_audio(const char* path) {
 
     if (strcmp(extLower, ".flac") == 0) {
         gCtl.ringBuf = new RingBuffer();
+        gCtl.pcmRingBuf = new RingBuffer();
         gCtl.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; return -8; }
+        if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; return -8; }
         gCtl.format = AudioFormat::FLAC;
         gCtl.running = true;
         gCtl.worker = std::thread(flacPlaybackThread);
@@ -102,8 +104,9 @@ int32_t start_audio(const char* path) {
     if (strcmp(extLower, ".mp3") == 0 || strcmp(extLower, ".aac") == 0
         || strcmp(extLower, ".ogg") == 0 || strcmp(extLower, ".m4a") == 0) {
         gCtl.ringBuf = new RingBuffer();
+        gCtl.pcmRingBuf = new RingBuffer();
         gCtl.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; return -8; }
+        if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; return -8; }
         gCtl.format = AudioFormat::MEDIA;
         gCtl.running = true;
         gCtl.worker = std::thread(mediaPlaybackThread);
@@ -111,4 +114,22 @@ int32_t start_audio(const char* path) {
     }
 
     return -1;
+}
+
+// ─── start_media_stream (URL-based streaming dispatch) ─────────────────────
+
+int32_t start_media_stream(const char* url) {
+    stopEngine();
+    resetCtl();
+
+    strncpy(gCtl.path, url, sizeof(gCtl.path) - 1);
+
+    gCtl.ringBuf = new RingBuffer();
+    gCtl.pcmRingBuf = new RingBuffer();
+    gCtl.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (gCtl.stopFd < 0) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; return -8; }
+    gCtl.format = AudioFormat::MEDIA;
+    gCtl.running = true;
+    gCtl.worker = std::thread(mediaStreamPlaybackThread);
+    return 0;
 }
