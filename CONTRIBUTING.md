@@ -20,7 +20,7 @@
   </p>
   <div align="center">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <img src="https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter" alt="Flutter 3.44" />
+    <img src="https://img.shields.io/badge/Flutter-3.22+-02569B?logo=flutter" alt="Flutter 3.22+" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
   </div>
   <br>
@@ -81,8 +81,8 @@ git push origin feature/short-descriptive-name
 | **Code style** | Follow existing conventions in the project |
 | **Commit messages** | Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, etc.) |
 | **Static analysis** | `flutter analyze` must pass with no errors |
-| **Tests** | Add tests when possible and verify existing ones pass |
-| **Documentation** | Update README if your change modifies the API or behavior |
+| **Tests** | `flutter test` + C++ tests must pass. Add tests for new functionality |
+| **Documentation** | Update README if your change modifies the API. Add dartdoc to all new public API members |
 | **Base branch** | Always target `main` |
 | **Single purpose** | Each PR should solve one problem or add one feature |
 
@@ -113,22 +113,51 @@ flutter run
 ```
 audio_engine/
 ├── lib/
-│   └── audio_engine.dart            # Dart FFI bindings
+│   ├── audio_engine.dart           # Library barrel file (re-exports)
+│   └── src/
+│       ├── ffi_bindings.dart       # All FFI lookupFunction definitions
+│       ├── track_player.dart       # TrackPlayer with streams + Timer polling
+│       ├── audio_mixer.dart        # AudioEngine singleton, 4 tracks, EQ
+│       └── pcm_stream.dart         # Real-time PCM stream for visualization
 ├── android/src/main/cpp/
-│   ├── CMakeLists.txt               # Native build configuration
-│   ├── audio_engine.cpp             # AAudio callback + FFI exports
-│   ├── dispatcher.cpp/.h            # Format dispatch (start_audio)
-│   ├── engine_state.cpp/.h          # Global state (gCtl) + stopEngine
-│   ├── engine_threads.cpp/.h        # Decoder threads
-│   ├── aaudio_utils.cpp/.h          # AAudio stream creation/management
-│   ├── ring_buffer.h                # Lock-free SPSC ring buffer
-│   ├── wav_handler.cpp/.h           # Legacy WAV playback
-│   ├── flac_handler.cpp/.h          # Legacy FLAC playback
-│   ├── media_handler.cpp/.h         # Legacy media playback
-│   ├── common.h                     # Shared macros and types
-│   └── libs/                        # Precompiled libraries (FLAC + Ogg)
-├── example/                          # Flutter example app
-├── LICENSE.md
+│   ├── CMakeLists.txt              # Native build configuration
+│   ├── audio_engine.cpp            # AAudio callback + FFI exports
+│   ├── dispatcher.cpp/.h           # Format dispatch (track_play)
+│   ├── engine_state.cpp/.h         # Global state (gCtl) + stopEngine/resetCtl
+│   ├── engine_threads.cpp/.h       # Decoder threads (WAV/FLAC/Media/Stream)
+│   ├── aaudio_utils.cpp/.h         # AAudio stream creation/management
+│   ├── ring_buffer.h               # Lock-free SPSC ring buffer
+│   ├── wav_handler.cpp/.h          # Legacy WAV blocking playback
+│   ├── flac_handler.cpp/.h         # Legacy FLAC playback + metadata
+│   ├── media_handler.cpp/.h        # Legacy media blocking playback
+│   ├── common.h                    # Shared macros and types
+│   ├── dsp_processor.h             # 10-band EQ with biquad filters
+│   └── libs/                       # Precompiled libraries (FLAC + Ogg)
+├── test/
+│   ├── audio_engine_test.dart      # 10 tests — AudioEngine singleton, compat
+│   ├── track_player_test.dart      # 14 tests — TrackPlayer lifecycle
+│   ├── pcm_stream_test.dart        # 6 tests — PcmStream emit/stop/dispose
+│   ├── fake_ffi.dart               # Mock FfiInterface for Dart tests
+│   └── cpp/
+│       ├── ring_buffer_test.cpp    # 10 tests — RingBuffer push/pop/wrap
+│       ├── dsp_processor_test.cpp  # 12 tests — EQ filters, bypass, bounds
+│       ├── ring_buffer_benchmark.cpp
+│       ├── dsp_processor_benchmark.cpp
+│       ├── build_and_run.sh
+│       └── common.h                # Mock for host-based C++ testing
+├── example/                        # Flutter example app
+│   └── lib/
+│       ├── main.dart
+│       └── widgets/
+│           ├── home_screen.dart
+│           ├── audio_controls.dart
+│           ├── library_status_card.dart
+│           ├── pcm_visualizer.dart
+│           ├── eq_dialog.dart
+│           ├── status_display.dart
+│           └── library_status_card.dart
+├── LICENSE
+├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── ROADMAP.md
 └── README.md
@@ -153,6 +182,14 @@ audio_engine/
 - Use `dart:ffi` with correct types (`Int32`, `Int64`, `Pointer<Utf8>`)
 - Always free native memory with `calloc.free()` in `finally` blocks
 - Handle exceptions with descriptive messages
+- **Document all public API** with dartdoc comments (classes, methods, properties, enums)
+
+### Testing
+
+- **Dart tests** (`flutter test`): 30+ unit tests covering TrackPlayer, AudioEngine, and PcmStream
+- **C++ tests** (`bash test/cpp/build_and_run.sh`): 22+ unit tests for RingBuffer and DspProcessor, plus latency benchmarks
+- Add tests when modifying existing functionality
+- For new features requiring FFI interaction, extend `test/fake_ffi.dart` with the new mock methods
 
 ### Commit Messages
 

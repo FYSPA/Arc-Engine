@@ -6,12 +6,13 @@
 #include "common.h"
 
 class RingBuffer;
+class DspProcessor;
 
-struct EngineState {
+#define MAX_TRACKS 4
+
+struct TrackState {
     std::thread worker;
-
     AudioFormat format{AudioFormat::NONE};
-    AAudioStream *stream{nullptr};
     int32_t sampleRate{0}, channels{0}, bitsPerSample{0};
     int64_t totalFrames{0};
     std::atomic<int64_t> writtenFrames{0};
@@ -22,22 +23,30 @@ struct EngineState {
 
     char path[512]{0};
 
-    // Ring buffer for callback-mode playback
     RingBuffer *ringBuf{nullptr};
-    int32_t outChannels{0};
-
-    // Secondary ring buffer for PCM streaming to Dart
     RingBuffer *pcmRingBuf{nullptr};
 
-    // Stop eventfd: kernel-based cross-thread signaling (created before thread spawn)
     int stopFd{-1};
 
-    // Control flags
     volatile int running{0};
     volatile int paused{0};
     std::atomic<int64_t> seekToFrame{-1};
 
-    // Debug counters
+    float volume{1.0f};
+    float pan{0.0f};
+};
+
+struct EngineState {
+    AAudioStream *stream{nullptr};
+    int32_t sampleRate{0}, outChannels{0};
+
+    DspProcessor *dsp{nullptr};
+
+    TrackState tracks[MAX_TRACKS];
+
+    float masterVolume{1.0f};
+
+    // Debug counters (shared across all tracks)
     std::atomic<int32_t> callbackCount{0};
     std::atomic<int32_t> callbackFramesTotal{0};
 };
@@ -46,3 +55,6 @@ extern EngineState gCtl;
 
 void resetCtl();
 void stopEngine();
+void stopTrack(int index);
+void stopAllTracks();
+int findFreeTrack();

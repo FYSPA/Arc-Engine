@@ -56,10 +56,12 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     const FLAC__StreamDecoder*, const FLAC__Frame *frame,
     const FLAC__int32 * const buffer[], void *client_data) {
 
-    if (!gCtl.running) return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
-    if (gCtl.paused) return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
-
     PlayState *state = (PlayState*)client_data;
+    TrackState &trk = gCtl.tracks[state->trackIndex];
+
+    if (!trk.running) return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    if (trk.paused) return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+
     const int32_t frames = frame->header.blocksize;
     const int32_t channels = state->info.channels;
     const float scale = 1.0f / (float)(1LL << (state->info.bitsPerSample - 1));
@@ -69,14 +71,14 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
         for (int32_t ch = 0; ch < channels; ch++)
             floatBuf[i * channels + ch] = buffer[ch][i] * scale;
 
-    if (gCtl.ringBuf) {
-        gCtl.ringBuf->push(floatBuf, frames, channels);
+    if (trk.ringBuf) {
+        trk.ringBuf->push(floatBuf, frames, channels);
     }
-    if (gCtl.pcmRingBuf) {
-        gCtl.pcmRingBuf->push(floatBuf, frames, channels);
+    if (trk.pcmRingBuf) {
+        trk.pcmRingBuf->push(floatBuf, frames, channels);
     }
 
-    gCtl.writtenFrames += frames;
+    trk.writtenFrames += frames;
 
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }

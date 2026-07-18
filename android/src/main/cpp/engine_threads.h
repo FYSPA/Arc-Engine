@@ -1,6 +1,6 @@
 #pragma once
 
-void wavPlaybackThread();
-void flacPlaybackThread();
-void mediaPlaybackThread();
-void mediaStreamPlaybackThread();
+void wavPlaybackThread(int trackIndex);
+void flacPlaybackThread(int trackIndex);
+void mediaPlaybackThread(int trackIndex);
+void mediaStreamPlaybackThread(int trackIndex);

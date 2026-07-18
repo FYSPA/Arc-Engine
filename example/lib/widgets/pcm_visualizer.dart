@@ -22,8 +22,8 @@ class _PcmVisualizerState extends State<PcmVisualizer> {
   }
 
   void _startStream() {
-    final stream =
-        AudioEngine.startPcmStream(interval: const Duration(milliseconds: 50));
+    final stream = AudioEngine.instance
+        .startPcmStream(interval: const Duration(milliseconds: 50));
     _subscription = stream.listen((samples) {
       if (!mounted) return;
       setState(() {
@@ -95,9 +95,11 @@ class _WaveformPainter extends CustomPainter {
 
     for (int i = 0; i < samples.length - 1; i++) {
       final x1 = i * stepX;
-      final y1 = centerY + (samples[i].clamp(-1.0, 1.0) * (size.height / 2 - 4));
+      final y1 =
+          centerY + (samples[i].clamp(-1.0, 1.0) * (size.height / 2 - 4));
       final x2 = (i + 1) * stepX;
-      final y2 = centerY + (samples[i + 1].clamp(-1.0, 1.0) * (size.height / 2 - 4));
+      final y2 =
+          centerY + (samples[i + 1].clamp(-1.0, 1.0) * (size.height / 2 - 4));
       canvas.drawLine(Offset(x1, y1), Offset(x2, y2), paint);
     }
   }

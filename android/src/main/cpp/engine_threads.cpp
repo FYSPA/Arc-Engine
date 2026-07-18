@@ -4,6 +4,7 @@
 #include "aaudio_utils.h"
 #include "flac_handler.h"
 #include "common.h"
+#include "dsp_processor.h"
 
 #include <cstdio>
 #include <cstring>
@@ -22,57 +23,62 @@
 
 // ─── WAV Playback Thread ─────────────────────────────────────────────────────
 
-void wavPlaybackThread() {
-    uint8_t *data = gCtl.wavData;
-    uint32_t dataSize = gCtl.wavDataSize;
-    int32_t fs = gCtl.wavFrameSize;
-    int32_t sr = gCtl.sampleRate, ch = gCtl.channels, bps = gCtl.bitsPerSample;
-    int64_t total = gCtl.totalFrames;
+void wavPlaybackThread(int ti) {
+    TrackState &trk = gCtl.tracks[ti];
+    uint8_t *data = trk.wavData;
+    uint32_t dataSize = trk.wavDataSize;
+    int32_t fs = trk.wavFrameSize;
+    int32_t sr = trk.sampleRate, ch = trk.channels, bps = trk.bitsPerSample;
+    int64_t total = trk.totalFrames;
 
-    LOGI("WAV thread started: sr=%d ch=%d bps=%d totalFrames=%lld",
-         sr, ch, bps, (long long)total);
+    LOGI("WAV thread[%d]: sr=%d ch=%d bps=%d totalFrames=%lld",
+         ti, sr, ch, bps, (long long)total);
 
-    gCtl.outChannels = ch;
-    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-    if (!gCtl.stream) {
-        LOGE("WAV thread: createAAudioStreamCallback returned NULL");
-        delete[] data; gCtl.wavData = nullptr; gCtl.running = 0; return;
+    // First track sets the shared output config
+    if (!gCtl.stream && sr > 0 && ch > 0) {
+        gCtl.outChannels = ch;
+        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
+        gCtl.dsp->init(sr, ch);
+        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+        if (!gCtl.stream) {
+            LOGE("WAV thread[%d]: createAAudioStreamCallback failed", ti);
+            delete[] data; trk.wavData = nullptr; trk.running = 0; return;
+        }
+        gCtl.sampleRate = sr;
+        LOGI("WAV thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
     }
 
-    LOGI("WAV thread: stream OK, entering playback loop");
+    trk.running = 1;
     int32_t blockSize = 4096;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
     uint64_t _st = 0;
-    // Drain phantom data (device quirk: fresh eventfd returns counter=1)
-    read(gCtl.stopFd, &_st, sizeof(_st));
+    read(trk.stopFd, &_st, sizeof(_st)); // Drain phantom data
 
-    while (gCtl.writtenFrames.load() < total) {
+    while (trk.writtenFrames.load() < total) {
         _st = 0;
-        if (read(gCtl.stopFd, &_st, sizeof(_st)) > 0) {
-            LOGI("WAV got stop signal, exiting");
-            break;
+        if (read(trk.stopFd, &_st, sizeof(_st)) > 0) {
+            LOGI("WAV thread[%d]: got stop signal", ti); break;
         }
-        if (gCtl.paused) {
+        if (trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
 
-        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0) {
-            gCtl.writtenFrames = seek < total ? seek : total;
-            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+            trk.writtenFrames = seek < total ? seek : total;
+            if (trk.ringBuf) trk.ringBuf->reset();
         }
 
-        // Pacing: don't overfill the ring buffer
-        if (gCtl.ringBuf && gCtl.ringBuf->available(ch) > threshold) {
+        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        int32_t rem = (int32_t)(total - gCtl.writtenFrames);
+        int32_t rem = (int32_t)(total - trk.writtenFrames);
         int32_t chunk = rem < blockSize ? rem : blockSize;
-        int32_t base = (int32_t)gCtl.writtenFrames;
+        int32_t base = (int32_t)trk.writtenFrames;
 
         float floatBuf[chunk * ch];
         for (int32_t i = 0; i < chunk; i++) {
@@ -89,91 +95,103 @@ void wavPlaybackThread() {
             }
         }
 
-        if (gCtl.ringBuf) {
-            int32_t pushed = gCtl.ringBuf->push(floatBuf, chunk, ch);
-            gCtl.writtenFrames += pushed;
+        if (trk.ringBuf) {
+            int32_t pushed = trk.ringBuf->push(floatBuf, chunk, ch);
+            trk.writtenFrames += pushed;
         }
-        if (gCtl.pcmRingBuf) {
-            gCtl.pcmRingBuf->push(floatBuf, chunk, ch);
+        if (trk.pcmRingBuf) {
+            trk.pcmRingBuf->push(floatBuf, chunk, ch);
         }
     }
 
-    LOGI("WAV loop exit: running=%d wf=%lld total=%lld",
-         gCtl.running, (long long)gCtl.writtenFrames.load(), (long long)total);
+    LOGI("WAV thread[%d]: loop exit wf=%lld total=%lld", ti,
+         (long long)trk.writtenFrames.load(), (long long)total);
 
-    // Drain ring buffer before stopping
-    if (gCtl.writtenFrames >= total && gCtl.ringBuf) {
-        while (gCtl.ringBuf->available(ch) > 0)
+    // Drain ring buffer
+    if (trk.writtenFrames >= total && trk.ringBuf) {
+        while (trk.ringBuf->available(ch) > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
     delete[] data;
-    gCtl.wavData = nullptr;
-    gCtl.running = 0;
-    LOGI("WAV engine finished: %lld/%lld frames (cb calls=%d cb frames=%d)",
-         (long long)gCtl.writtenFrames.load(), (long long)total,
-         gCtl.callbackCount.load(), gCtl.callbackFramesTotal.load());
+    trk.wavData = nullptr;
+    trk.running = 0;
+    LOGI("WAV thread[%d]: finished wf=%lld/%lld", ti,
+         (long long)trk.writtenFrames.load(), (long long)total);
 }
 
 // ─── FLAC Playback Thread ────────────────────────────────────────────────────
 
-void flacPlaybackThread() {
+void flacPlaybackThread(int ti) {
+    TrackState &trk = gCtl.tracks[ti];
+
     PlayState ps;
     memset(&ps, 0, sizeof(ps));
+    ps.trackIndex = ti;
 
     FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
-    if (!decoder) { gCtl.running = false; return; }
+    if (!decoder) { trk.running = false; return; }
 
     FLAC__stream_decoder_set_metadata_respond_all(decoder);
     FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
-        decoder, gCtl.path, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+        decoder, trk.path, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
     if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
         FLAC__stream_decoder_delete(decoder);
-        gCtl.running = false; return;
+        trk.running = false; return;
     }
 
     FLAC__stream_decoder_process_until_end_of_metadata(decoder);
     if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
         FLAC__stream_decoder_delete(decoder);
-        gCtl.running = false; return;
+        trk.running = false; return;
     }
 
-    gCtl.sampleRate = ps.info.sampleRate;
-    gCtl.channels = ps.info.channels;
-    gCtl.totalFrames = ps.info.totalSamples;
-    gCtl.outChannels = ps.info.channels;
+    trk.sampleRate = ps.info.sampleRate;
+    trk.channels = ps.info.channels;
+    trk.totalFrames = ps.info.totalSamples;
 
-    gCtl.stream = createAAudioStreamCallback(ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
-    if (!gCtl.stream) { FLAC__stream_decoder_delete(decoder); gCtl.running = 0; return; }
-    gCtl.running = 1;
+    // First track sets shared output config
+    if (!gCtl.stream && ps.info.sampleRate > 0 && ps.info.channels > 0) {
+        gCtl.outChannels = ps.info.channels;
+        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
+        gCtl.dsp->init(ps.info.sampleRate, ps.info.channels);
+        gCtl.stream = createAAudioStreamCallback(
+            ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
+        if (!gCtl.stream) {
+            FLAC__stream_decoder_delete(decoder);
+            trk.running = 0; return;
+        }
+        gCtl.sampleRate = ps.info.sampleRate;
+        LOGI("FLAC thread[%d]: shared AAudio stream created", ti);
+    }
+
+    trk.running = 1;
     ps.stream = gCtl.stream;
 
     int32_t ch = ps.info.channels;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
     uint64_t _stopFlac = 0;
-    while (read(gCtl.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
+    while (read(trk.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
         _stopFlac = 0;
-        if (ps.info.totalSamples > 0 && gCtl.writtenFrames >= ps.info.totalSamples)
+        if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples)
             break;
 
-        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0) {
             if (seek < ps.info.totalSamples || ps.info.totalSamples == 0) {
                 FLAC__stream_decoder_seek_absolute(decoder, seek);
-                gCtl.writtenFrames = seek;
-                if (gCtl.ringBuf) gCtl.ringBuf->reset();
+                trk.writtenFrames = seek;
+                if (trk.ringBuf) trk.ringBuf->reset();
             }
         }
 
-        if (gCtl.paused) {
+        if (trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
 
-        // Pacing
-        if (gCtl.ringBuf && gCtl.ringBuf->available(ch) > threshold) {
+        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -182,31 +200,31 @@ void flacPlaybackThread() {
         if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) break;
     }
 
-    // Drain ring buffer
-    bool finished = (ps.info.totalSamples > 0 && gCtl.writtenFrames >= ps.info.totalSamples);
-    if (finished && gCtl.ringBuf) {
-        while (gCtl.ringBuf->available(ch) > 0)
+    bool finished = (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples);
+    if (finished && trk.ringBuf) {
+        while (trk.ringBuf->available(ch) > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
-    gCtl.running = false;
-    LOGI("FLAC engine finished");
+    trk.running = false;
+    LOGI("FLAC thread[%d]: finished", ti);
 }
 
-// ─── Media Playback Thread (AMediaCodec) ─────────────────────────────────────
+// ─── Media Playback Thread (AMediaCodec, local file) ─────────────────────────
 
-void mediaPlaybackThread() {
-    int fd = open(gCtl.path, O_RDONLY);
-    if (fd < 0) { gCtl.running = false; return; }
+void mediaPlaybackThread(int ti) {
+    TrackState &trk = gCtl.tracks[ti];
+
+    int fd = open(trk.path, O_RDONLY);
+    if (fd < 0) { trk.running = false; return; }
 
     AMediaExtractor *extractor = AMediaExtractor_new();
     off64_t fileLen = lseek64(fd, 0, SEEK_END);
     lseek64(fd, 0, SEEK_SET);
     if (AMediaExtractor_setDataSourceFd(extractor, fd, 0, fileLen) != AMEDIA_OK) {
-        AMediaExtractor_delete(extractor); close(fd); gCtl.running = false; return;
+        AMediaExtractor_delete(extractor); close(fd); trk.running = false; return;
     }
 
     int32_t audioTrack = -1, sr = 0, ch = 0;
@@ -224,7 +242,7 @@ void mediaPlaybackThread() {
         }
         AMediaFormat_delete(fmt);
     }
-    if (audioTrack < 0) { AMediaExtractor_delete(extractor); close(fd); gCtl.running = false; return; }
+    if (audioTrack < 0) { AMediaExtractor_delete(extractor); close(fd); trk.running = false; return; }
 
     AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
     const char *mime = NULL;
@@ -236,51 +254,58 @@ void mediaPlaybackThread() {
         AMediaCodec_start(codec) != AMEDIA_OK) {
         if (codec) AMediaCodec_delete(codec);
         AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor); close(fd);
-        gCtl.running = false; return;
+        trk.running = false; return;
     }
     AMediaFormat_delete(trackFmt);
 
-    gCtl.sampleRate = sr;
-    gCtl.channels = ch;
-    gCtl.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
-    gCtl.writtenFrames = 0;
-    gCtl.outChannels = ch;
+    trk.sampleRate = sr;
+    trk.channels = ch;
+    trk.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
+    trk.writtenFrames = 0;
 
-    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-    if (!gCtl.stream) {
-        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
-        AMediaExtractor_delete(extractor); close(fd);
-        gCtl.running = 0; return;
+    // First track sets shared output config
+    if (!gCtl.stream && sr > 0 && ch > 0) {
+        gCtl.outChannels = ch;
+        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
+        gCtl.dsp->init(sr, ch);
+        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+        if (!gCtl.stream) {
+            AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+            AMediaExtractor_delete(extractor); close(fd);
+            trk.running = 0; return;
+        }
+        gCtl.sampleRate = sr;
+        LOGI("Media thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
     }
-    gCtl.running = 1;
+
+    trk.running = 1;
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
     uint64_t _stopMedia = 0;
-    while (read(gCtl.stopFd, &_stopMedia, sizeof(_stopMedia)) <= 0) {
+    while (read(trk.stopFd, &_stopMedia, sizeof(_stopMedia)) <= 0) {
         _stopMedia = 0;
-        int64_t seek = gCtl.seekToFrame.exchange(-1);
+        int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0 && sr > 0) {
             int64_t seekUs = seek * 1000000 / sr;
             AMediaExtractor_seekTo(extractor, seekUs, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
             AMediaCodec_flush(codec);
             inputDone = false;
             outputDone = false;
-            gCtl.writtenFrames = seek;
-            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+            trk.writtenFrames = seek;
+            if (trk.ringBuf) trk.ringBuf->reset();
         }
 
-        if (outputDone && !gCtl.paused) break;
+        if (outputDone && !trk.paused) break;
 
-        // Pacing
-        if (gCtl.ringBuf && gCtl.ringBuf->available(outCh) > threshold && !gCtl.paused) {
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        if (!inputDone && !gCtl.paused) {
+        if (!inputDone && !trk.paused) {
             ssize_t inIdx = AMediaCodec_dequeueInputBuffer(codec, 10000);
             if (inIdx >= 0) {
                 size_t inSize;
@@ -303,11 +328,7 @@ void mediaPlaybackThread() {
 
         if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
             AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
-            if (!gCtl.stream) {
-                AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
-                gCtl.outChannels = outCh;
-                gCtl.stream = createAAudioStreamCallback(sr, outCh, aaudioDataCallback, nullptr);
-            }
+            AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
             AMediaFormat_delete(newFmt);
             continue;
         }
@@ -316,7 +337,7 @@ void mediaPlaybackThread() {
             bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
             if (eos) outputDone = true;
 
-            if (info.size > 0 && gCtl.stream && !gCtl.paused) {
+            if (info.size > 0 && gCtl.stream && !trk.paused) {
                 size_t outSize;
                 uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
                 if (outBuf) {
@@ -328,24 +349,24 @@ void mediaPlaybackThread() {
                         int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
                         fb[i] = vs / 32768.0f;
                     }
-                    if (gCtl.ringBuf) {
-                        gCtl.ringBuf->push(fb, frames, outCh);
+                    if (trk.ringBuf) {
+                        trk.ringBuf->push(fb, frames, outCh);
                     }
-                    if (gCtl.pcmRingBuf) {
-                        gCtl.pcmRingBuf->push(fb, frames, outCh);
+                    if (trk.pcmRingBuf) {
+                        trk.pcmRingBuf->push(fb, frames, outCh);
                     }
                     delete[] fb;
-                    gCtl.writtenFrames += frames;
+                    trk.writtenFrames += frames;
                 }
             }
             AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
 
-            if (gCtl.paused && inputDone && eos) {
+            if (trk.paused && inputDone && eos) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else if (outIdx == AMEDIACODEC_INFO_TRY_AGAIN_LATER ||
                    outIdx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
-            if (gCtl.paused && inputDone) {
+            if (trk.paused && inputDone) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else {
@@ -354,27 +375,28 @@ void mediaPlaybackThread() {
     }
 
     // Drain ring buffer
-    if (outputDone && gCtl.ringBuf) {
-        while (gCtl.running && gCtl.ringBuf->available(outCh) > 0)
+    if (outputDone && trk.ringBuf) {
+        while (trk.running && trk.ringBuf->available(outCh) > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);
     AMediaExtractor_delete(extractor); close(fd);
-    gCtl.running = false;
-    LOGI("Media engine finished");
+    trk.running = false;
+    LOGI("Media thread[%d]: finished", ti);
 }
 
 // ─── Media Streaming Thread (URL-based AMediaExtractor) ────────────────────
 
-void mediaStreamPlaybackThread() {
+void mediaStreamPlaybackThread(int ti) {
+    TrackState &trk = gCtl.tracks[ti];
+
     AMediaExtractor *extractor = AMediaExtractor_new();
-    media_status_t setStatus = AMediaExtractor_setDataSource(extractor, gCtl.path);
+    media_status_t setStatus = AMediaExtractor_setDataSource(extractor, trk.path);
     if (setStatus != AMEDIA_OK) {
         AMediaExtractor_delete(extractor);
-        LOGE("Media stream: setDataSource failed: status=%d url=%s", setStatus, gCtl.path);
-        gCtl.running = false; return;
+        LOGE("Media stream[%d]: setDataSource failed: status=%d", ti, setStatus);
+        trk.running = false; return;
     }
 
     int32_t audioTrack = -1, sr = 0, ch = 0;
@@ -392,7 +414,7 @@ void mediaStreamPlaybackThread() {
         }
         AMediaFormat_delete(fmt);
     }
-    if (audioTrack < 0) { AMediaExtractor_delete(extractor); gCtl.running = false; return; }
+    if (audioTrack < 0) { AMediaExtractor_delete(extractor); trk.running = false; return; }
 
     AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
     const char *mime = NULL;
@@ -404,52 +426,60 @@ void mediaStreamPlaybackThread() {
         AMediaCodec_start(codec) != AMEDIA_OK) {
         if (codec) AMediaCodec_delete(codec);
         AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor);
-        gCtl.running = false; return;
+        trk.running = false; return;
     }
     AMediaFormat_delete(trackFmt);
 
-    gCtl.sampleRate = sr;
-    gCtl.channels = ch;
-    gCtl.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
-    gCtl.writtenFrames = 0;
-    gCtl.outChannels = ch;
+    trk.sampleRate = sr;
+    trk.channels = ch;
+    trk.totalFrames = (durationUs > 0 && sr > 0) ? (durationUs * sr / 1000000) : 0;
+    trk.writtenFrames = 0;
 
-    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-    if (!gCtl.stream) {
-        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
-        AMediaExtractor_delete(extractor);
-        gCtl.running = 0; return;
+    // First track sets shared output config
+    if (!gCtl.stream && sr > 0 && ch > 0) {
+        gCtl.outChannels = ch;
+        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
+        gCtl.dsp->init(sr, ch);
+        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+        if (!gCtl.stream) {
+            AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+            AMediaExtractor_delete(extractor);
+            trk.running = 0; return;
+        }
+        gCtl.sampleRate = sr;
+        LOGI("Media stream[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
     }
-    gCtl.running = 1;
+
+    trk.running = 1;
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
-    LOGI("Media stream started: %s sr=%d ch=%d", gCtl.path, sr, ch);
+    LOGI("Media stream[%d]: started sr=%d ch=%d path=%s", ti, sr, ch, trk.path);
 
     uint64_t _stopVal = 0;
-    while (read(gCtl.stopFd, &_stopVal, sizeof(_stopVal)) <= 0) {
+    while (read(trk.stopFd, &_stopVal, sizeof(_stopVal)) <= 0) {
         _stopVal = 0;
-        int64_t seek = gCtl.seekToFrame.exchange(-1);
-        if (seek >= 0 && sr > 0 && gCtl.totalFrames > 0) {
+        int64_t seek = trk.seekToFrame.exchange(-1);
+        if (seek >= 0 && sr > 0 && trk.totalFrames > 0) {
             int64_t seekUs = seek * 1000000 / sr;
             AMediaExtractor_seekTo(extractor, seekUs, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
             AMediaCodec_flush(codec);
             inputDone = false;
             outputDone = false;
-            gCtl.writtenFrames = seek;
-            if (gCtl.ringBuf) gCtl.ringBuf->reset();
+            trk.writtenFrames = seek;
+            if (trk.ringBuf) trk.ringBuf->reset();
         }
 
-        if (outputDone && !gCtl.paused) break;
+        if (outputDone && !trk.paused) break;
 
-        if (gCtl.ringBuf && gCtl.ringBuf->available(outCh) > threshold && !gCtl.paused) {
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        if (!inputDone && !gCtl.paused) {
+        if (!inputDone && !trk.paused) {
             ssize_t inIdx = AMediaCodec_dequeueInputBuffer(codec, 10000);
             if (inIdx >= 0) {
                 size_t inSize;
@@ -463,8 +493,8 @@ void mediaStreamPlaybackThread() {
                         int64_t sampleTime = AMediaExtractor_getSampleTime(extractor);
                         AMediaCodec_queueInputBuffer(codec, inIdx, 0, sampleSize, sampleTime, 0);
                         AMediaExtractor_advance(extractor);
-                        if (gCtl.totalFrames > 0 && sr > 0 && sampleTime > 0) {
-                            gCtl.writtenFrames = sampleTime * sr / 1000000;
+                        if (trk.totalFrames > 0 && sr > 0 && sampleTime > 0) {
+                            trk.writtenFrames = sampleTime * sr / 1000000;
                         }
                     }
                 }
@@ -476,11 +506,7 @@ void mediaStreamPlaybackThread() {
 
         if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
             AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
-            if (!gCtl.stream) {
-                AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
-                gCtl.outChannels = outCh;
-                gCtl.stream = createAAudioStreamCallback(sr, outCh, aaudioDataCallback, nullptr);
-            }
+            AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
             AMediaFormat_delete(newFmt);
             continue;
         }
@@ -489,7 +515,7 @@ void mediaStreamPlaybackThread() {
             bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
             if (eos) outputDone = true;
 
-            if (info.size > 0 && gCtl.stream && !gCtl.paused) {
+            if (info.size > 0 && gCtl.stream && !trk.paused) {
                 size_t outSize;
                 uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
                 if (outBuf) {
@@ -501,23 +527,23 @@ void mediaStreamPlaybackThread() {
                         int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
                         fb[i] = vs / 32768.0f;
                     }
-                    if (gCtl.ringBuf) {
-                        gCtl.ringBuf->push(fb, frames, outCh);
+                    if (trk.ringBuf) {
+                        trk.ringBuf->push(fb, frames, outCh);
                     }
-                    if (gCtl.pcmRingBuf) {
-                        gCtl.pcmRingBuf->push(fb, frames, outCh);
+                    if (trk.pcmRingBuf) {
+                        trk.pcmRingBuf->push(fb, frames, outCh);
                     }
                     delete[] fb;
                 }
             }
             AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
 
-            if (gCtl.paused && inputDone && eos) {
+            if (trk.paused && inputDone && eos) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else if (outIdx == AMEDIACODEC_INFO_TRY_AGAIN_LATER ||
                    outIdx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
-            if (gCtl.paused && inputDone) {
+            if (trk.paused && inputDone) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else {
@@ -525,15 +551,13 @@ void mediaStreamPlaybackThread() {
         }
     }
 
-    // Drain ring buffer
-    if (outputDone && gCtl.ringBuf) {
-        while (gCtl.running && gCtl.ringBuf->available(outCh) > 0)
+    if (outputDone && trk.ringBuf) {
+        while (trk.running && trk.ringBuf->available(outCh) > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);
     AMediaExtractor_delete(extractor);
-    gCtl.running = false;
-    LOGI("Media stream finished");
+    trk.running = false;
+    LOGI("Media stream[%d]: finished", ti);
 }

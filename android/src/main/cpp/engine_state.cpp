@@ -1,6 +1,7 @@
 #include "engine_state.h"
 #include "ring_buffer.h"
 #include "aaudio_utils.h"
+#include "dsp_processor.h"
 
 #include <unistd.h>
 #include <sys/eventfd.h>
@@ -8,41 +9,89 @@
 EngineState gCtl;
 
 void resetCtl() {
-    gCtl.running = 0;
-    gCtl.paused = 0;
-    gCtl.seekToFrame = -1;
     gCtl.stream = nullptr;
-    gCtl.sampleRate = gCtl.channels = gCtl.bitsPerSample = 0;
-    gCtl.totalFrames = 0;
-    gCtl.writtenFrames = 0;
-    gCtl.wavData = nullptr;
-    gCtl.wavDataSize = gCtl.wavFrameSize = 0;
-    gCtl.path[0] = 0;
-    gCtl.ringBuf = nullptr;
-    gCtl.pcmRingBuf = nullptr;
+    gCtl.sampleRate = 0;
     gCtl.outChannels = 0;
+    gCtl.dsp = nullptr;
+    gCtl.masterVolume = 1.0f;
     gCtl.callbackCount = 0;
     gCtl.callbackFramesTotal = 0;
-    gCtl.stopFd = -1;
+}
+
+void stopTrack(int index) {
+    if (index < 0 || index >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[index];
+
+    LOGI("stopTrack[%d]: signaling stop (format=%d running=%d)",
+         index, (int)trk.format, trk.running);
+
+    // Signal stop via eventfd
+    if (trk.stopFd >= 0) {
+        uint64_t val = 1;
+        write(trk.stopFd, &val, sizeof(val));
+    }
+
+    // Wait for decoder thread to finish
+    if (trk.worker.joinable()) {
+        trk.worker.join();
+        LOGI("stopTrack[%d]: worker joined", index);
+    }
+
+    // Cleanup track resources
+    if (trk.wavData) { delete[] trk.wavData; trk.wavData = nullptr; }
+    trk.wavDataSize = trk.wavFrameSize = 0;
+    if (trk.ringBuf) { delete trk.ringBuf; trk.ringBuf = nullptr; }
+    if (trk.pcmRingBuf) { delete trk.pcmRingBuf; trk.pcmRingBuf = nullptr; }
+    if (trk.stopFd >= 0) { close(trk.stopFd); trk.stopFd = -1; }
+
+    trk.format = AudioFormat::NONE;
+    trk.sampleRate = trk.channels = trk.bitsPerSample = 0;
+    trk.totalFrames = 0;
+    trk.writtenFrames = 0;
+    trk.path[0] = 0;
+    trk.running = 0;
+    trk.paused = 0;
+    trk.seekToFrame = -1;
+    trk.volume = 1.0f;
+    trk.pan = 0.0f;
+
+    LOGI("stopTrack[%d]: done", index);
+}
+
+void stopAllTracks() {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        stopTrack(i);
+    }
+}
+
+int findFreeTrack() {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (!gCtl.tracks[i].running && gCtl.tracks[i].format == AudioFormat::NONE) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void cleanupEngine() {
-    if (gCtl.stream) { closeAAudioStream(gCtl.stream); gCtl.stream = nullptr; }
-    if (gCtl.wavData) { delete[] gCtl.wavData; gCtl.wavData = nullptr; }
-    gCtl.wavDataSize = gCtl.wavFrameSize = 0;
-    if (gCtl.ringBuf) { delete gCtl.ringBuf; gCtl.ringBuf = nullptr; }
-    if (gCtl.pcmRingBuf) { delete gCtl.pcmRingBuf; gCtl.pcmRingBuf = nullptr; }
-    if (gCtl.stopFd >= 0) { close(gCtl.stopFd); gCtl.stopFd = -1; }
+    // Close shared AAudio stream
+    if (gCtl.stream) {
+        LOGI("cleanupEngine: closing shared AAudio stream");
+        closeAAudioStream(gCtl.stream);
+        gCtl.stream = nullptr;
+    }
+
+    // Delete shared DSP
+    if (gCtl.dsp) {
+        delete gCtl.dsp;
+        gCtl.dsp = nullptr;
+    }
 }
 
 void stopEngine() {
-    if (gCtl.stopFd >= 0) {
-        uint64_t val = 1;
-        write(gCtl.stopFd, &val, sizeof(val));
-    }
-    if (gCtl.worker.joinable()) {
-        gCtl.worker.join();
-    }
+    LOGI("stopEngine: stopping all tracks");
+    stopAllTracks();
     cleanupEngine();
     resetCtl();
+    LOGI("stopEngine: done");
 }

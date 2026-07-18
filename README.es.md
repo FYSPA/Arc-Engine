@@ -21,8 +21,9 @@
     <a href="./CONTRIBUTING.md">Contribuir</a>
   </p>
   <div align="center">
-    <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <img src="https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter" alt="Flutter 3.44" />
+    <a href="https://pub.dev/packages/audio_engine"><img src="https://img.shields.io/pub/v/audio_engine" alt="pub.dev" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-blue.svg" alt="Licencia: MIT" /></a>
+    <img src="https://img.shields.io/badge/Flutter-3.22+-02569B?logo=flutter" alt="Flutter 3.22+" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
   </div>
   <br>
@@ -127,43 +128,39 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 
 ### Requisitos
 
-- Flutter SDK `3.44.5` (compatible con Dart `>=3.12.2`)
+- Flutter SDK `>=3.22.0` (compatible con Dart `>=3.4.0`)
 - Dispositivo o emulador Android con **API 27+** (requisito de AAudio)
-- Android NDK (incluido con Android Studio)
 
 ### Instalación
 
-Añade esto a tu `pubspec.yaml`:
+Añade a tu `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  audio_engine:
-    git:
-      url: https://github.com/FYSPA/Arc-Engine.git
+  audio_engine: ^0.1.0
 ```
 
-O si estás desarrollando localmente:
-
-```yaml
-dependencies:
-  audio_engine:
-    path: ./audio_engine
-```
-
-Luego:
+O via línea de comandos:
 
 ```bash
+dart pub add audio_engine
 flutter pub get
 ```
 
-### Verificación
+> El plugin solo soporta Android (API 27+). Usa el modo callback de AAudio, estabilizado en Android 8.1.
 
-Para verificar que el plugin funciona correctamente, puedes usar la [aplicación de ejemplo](./example/):
+### Probar la app de ejemplo
 
 ```bash
 cd example
 flutter pub get
 flutter run
+```
+
+Agrega archivos de audio usando el botón **Pick Files** en la app, o via adb:
+
+```bash
+adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
 ```
 
 > La app ejemplo usa `path_provider` para el directorio interno y `file_picker` (SAF) para importar archivos de audio, sorteando las restricciones de scoped storage en Android 11+.
@@ -293,7 +290,7 @@ Usa el botón **Pick Files** (tarjeta inferior) para abrir el selector de archiv
 
 ## 📄 Licencia
 
-Distribuido bajo la licencia MIT. Consulta [`LICENSE.md`](LICENSE.md) para más información.
+Distribuido bajo la licencia MIT. Consulta [`LICENSE`](LICENSE) para más información.
 
 ---
 
@@ -304,8 +301,7 @@ Distribuido bajo la licencia MIT. Consulta [`LICENSE.md`](LICENSE.md) para más 
   </p>
   <p>
     <a href="README.md">Ver README en Inglés</a> •
-    <a href="./CONTRIBUTING.md">Cómo Contribuir</a> •
-    <a href="./ROADMAP.md">Roadmap</a>
+    <a href="./CONTRIBUTING.md">Cómo Contribuir</a>
   </p>
   <br>
 </div>

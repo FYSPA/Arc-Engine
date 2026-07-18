@@ -9,12 +9,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'library_status_card.dart';
 import 'status_display.dart';
 import 'pcm_visualizer.dart';
+import 'eq_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _TrackUiState {
+  final TrackPlayer player;
+  String label;
+  bool running = false;
+  bool paused = false;
+  int position = 0;
+  int duration = 0;
+  double sliderValue = 0.0;
+  double volume = 1.0;
+  double pan = 0.0;
+
+  _TrackUiState(this.player, this.label) {
+    volume = player.volume;
+    pan = player.pan;
+  }
+
+  int get index => player.index;
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -36,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _position = 0;
   int _duration = 0;
   double _sliderValue = 0.0;
+  final List<_TrackUiState> _tracks = [];
 
   @override
   void initState() {
@@ -120,15 +141,26 @@ class _HomeScreenState extends State<HomeScreen> {
     Future.doWhile(() async {
       await Future.delayed(const Duration(milliseconds: 250));
       if (!mounted) return false;
-      if (AudioEngine.isPlaying) {
-        final pos = AudioEngine.getPosition();
-        final dur = AudioEngine.getDuration();
-        setState(() {
-          _position = pos;
-          _duration = dur;
-          _sliderValue = dur > 0 ? pos.toDouble() : 0.0;
-          _engineRunning = true;
-        });
+      bool anyRunning = false;
+      for (final t in _tracks) {
+        final p = t.player;
+        if (p.state == PlaybackState.playing) {
+          anyRunning = true;
+          t.running = true;
+          t.position = p.position.inMilliseconds;
+          t.duration = p.duration.inMilliseconds;
+          t.sliderValue = t.duration > 0 ? t.position.toDouble() : 0.0;
+        } else if (t.running) {
+          t.running = false;
+          t.paused = false;
+          t.sliderValue = 0.0;
+        }
+      }
+      if (_tracks.isNotEmpty && AudioEngine.isPlaying) {
+        _position = AudioEngine.getPosition();
+        _duration = AudioEngine.getDuration();
+        _sliderValue = _duration > 0 ? _position.toDouble() : 0.0;
+        _engineRunning = true;
       } else if (_engineRunning) {
         setState(() {
           _engineRunning = false;
@@ -136,6 +168,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _sliderValue = 0.0;
         });
       }
+      if (anyRunning) setState(() {});
       return true;
     });
   }
@@ -149,24 +182,70 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _startPlayback(String path, String label) {
+  int _findFreeTrackSlot() {
+    for (int i = 0; i < 4; i++) {
+      if (!_tracks.any((t) => t.index == i && t.running)) return i;
+    }
+    return -1;
+  }
+
+  void _startPlayback(String path, String label, {int? trackIndex}) {
     final f = File(path);
     if (!f.existsSync()) {
       setState(() => _status = 'File not found: $path');
       return;
     }
-    AudioEngine.stop();
-    final result = AudioEngine.startAudio(path);
+    final idx = trackIndex ?? 0;
+    final player = AudioEngine.instance.tracks[idx];
+    player.stop();
+    final result = player.play(path);
     setState(() {
       if (result == 0) {
-        _status = 'Playing $label...';
+        _status = 'Track $idx: $label';
         _engineRunning = true;
         _enginePaused = false;
         _sliderValue = 0.0;
+        final existing = _tracks.indexWhere((t) => t.index == idx);
+        if (existing >= 0) {
+          _tracks[existing].label = label;
+          _tracks[existing].running = true;
+          _tracks[existing].sliderValue = 0.0;
+        } else {
+          _tracks.add(_TrackUiState(player, label)..running = true);
+        }
       } else {
         _status = '$label: start error $result';
       }
     });
+  }
+
+  void _assignToTrack(String path, String label) {
+    final slot = _findFreeTrackSlot();
+    if (slot < 0) {
+      setState(() => _status = 'All 4 tracks are in use');
+      return;
+    }
+    _startPlayback(path, label, trackIndex: slot);
+  }
+
+  Future<void> _pickAndPlayTrack() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.audio,
+      allowMultiple: false,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.first;
+    if (file.path == null) return;
+    final destPath = '$_audioDir/${file.name}';
+    try {
+      if (!File(destPath).existsSync()) {
+        await File(file.path!).copy(destPath);
+      }
+      await _scanAudioFiles();
+      _assignToTrack(destPath, file.name);
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Error: $e');
+    }
   }
 
   static const String _defaultStreamUrl =
@@ -199,7 +278,8 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            child:
+                const Text('Cancel', style: TextStyle(color: Colors.white54)),
           ),
           TextButton(
             onPressed: () =>
@@ -379,6 +459,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     LibraryStatusCard(status: _libStatus),
                     const SizedBox(height: 16),
                     _buildFileList(context),
+                    if (_tracks.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      _buildTrackList(context),
+                    ],
                     if (_engineRunning) ...[
                       const SizedBox(height: 16),
                       _buildPlayerBar(context),
@@ -445,6 +529,39 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: _pickAndPlayTrack,
+            icon: const Icon(Icons.queue_music_rounded, size: 16),
+            label: const Text('+Track', style: TextStyle(fontSize: 12)),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              side: BorderSide(
+                color: Colors.white.withValues(alpha: 0.12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: () => showDialog(
+              context: context,
+              builder: (_) => const EqDialog(),
+            ),
+            icon: const Icon(Icons.tune_rounded, size: 16),
+            label: const Text('EQ', style: TextStyle(fontSize: 12)),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              side: BorderSide(
+                color: Colors.white.withValues(alpha: 0.12),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -501,8 +618,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     final file = e as File;
                     final path = file.path;
                     final name = _fileName(path);
+                    String sizeStr;
+                    try {
+                      sizeStr = _fileSize(file.lengthSync());
+                    } catch (_) {
+                      sizeStr = '?';
+                    }
+                    if (!File(path).existsSync())
+                      return const SizedBox.shrink();
                     return InkWell(
-                      onTap: () => _startPlayback(path, name),
+                      onTap: () => _assignToTrack(path, name),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 12),
@@ -529,7 +654,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    _fileSize(file.lengthSync()),
+                                    sizeStr,
                                     style: TextStyle(
                                       fontSize: 11,
                                       color:
@@ -555,6 +680,201 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildTrackList(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Tracks (${_tracks.length})',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.5),
+            ),
+          ),
+        ),
+        ..._tracks.map((t) => _buildTrackCard(context, t)),
+      ],
+    );
+  }
+
+  Widget _buildTrackCard(BuildContext context, _TrackUiState t) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: t.running
+                          ? const Color(0xFF4CAF50).withValues(alpha: 0.2)
+                          : Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      'Track ${t.index}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: t.running
+                            ? const Color(0xFF4CAF50)
+                            : Colors.white.withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      t.label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.8),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              if (t.running) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Text(
+                      _formatTime(t.position),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 3,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 12),
+                        ),
+                        child: Slider(
+                          value: t.sliderValue,
+                          min: 0.0,
+                          max: t.duration > 0 ? t.duration.toDouble() : 1.0,
+                          onChanged: (v) => setState(() => t.sliderValue = v),
+                          onChangeEnd: (v) {
+                            t.player.seek(Duration(milliseconds: v.toInt()));
+                            setState(() => t.position = v.toInt());
+                          },
+                        ),
+                      ),
+                    ),
+                    Text(
+                      _formatTime(t.duration),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () {
+                        if (t.paused) {
+                          t.player.resume();
+                        } else {
+                          t.player.pause();
+                        }
+                        setState(() => t.paused = !t.paused);
+                      },
+                      icon: Icon(
+                        t.paused
+                            ? Icons.play_arrow_rounded
+                            : Icons.pause_rounded,
+                        size: 22,
+                      ),
+                      color: Colors.white.withValues(alpha: 0.6),
+                      constraints:
+                          const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: EdgeInsets.zero,
+                    ),
+                    IconButton(
+                      onPressed: () {
+                        t.player.stop();
+                        setState(() {
+                          t.running = false;
+                          t.paused = false;
+                          t.sliderValue = 0.0;
+                          _tracks.removeWhere(
+                              (x) => x.index == t.index && !x.running);
+                        });
+                      },
+                      icon: const Icon(Icons.stop_rounded, size: 22),
+                      color: Colors.white.withValues(alpha: 0.4),
+                      constraints:
+                          const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: EdgeInsets.zero,
+                    ),
+                    const Spacer(),
+                    SizedBox(
+                      width: 80,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                        ),
+                        child: Slider(
+                          value: t.volume,
+                          min: 0.0,
+                          max: 1.0,
+                          divisions: 20,
+                          onChanged: (v) {
+                            t.player.volume = v;
+                            setState(() => t.volume = v);
+                          },
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 80,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                        ),
+                        child: Slider(
+                          value: t.pan,
+                          min: -1.0,
+                          max: 1.0,
+                          divisions: 20,
+                          onChanged: (v) {
+                            t.player.pan = v;
+                            setState(() => t.pan = v);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPlayerBar(BuildContext context) {
     return Card(
       child: Padding(
@@ -574,10 +894,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: SliderTheme(
                     data: SliderTheme.of(context).copyWith(
                       trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(
-                          enabledThumbRadius: 6),
-                      overlayShape: const RoundSliderOverlayShape(
-                          overlayRadius: 12),
+                      thumbShape:
+                          const RoundSliderThumbShape(enabledThumbRadius: 6),
+                      overlayShape:
+                          const RoundSliderOverlayShape(overlayRadius: 12),
                       overlayColor: Theme.of(context)
                           .colorScheme
                           .primary

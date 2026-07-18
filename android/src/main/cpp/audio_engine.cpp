@@ -1,80 +1,235 @@
 // ─── FFI exports (engine controls) ───────────────────────────────────────────
-// Non-blocking engine control functions exposed to Dart.
-// Legacy exports (play_wav, play_flac, etc.) are in their respective handler files.
+// Multi-track mixer engine.
+// The AAudio callback sums all active tracks with volume/pan.
+// Legacy single-track controls are aliases for track 0.
 
 #include "dispatcher.h"
 #include "engine_state.h"
 #include "ring_buffer.h"
 #include "common.h"
+#include "dsp_processor.h"
+#include "aaudio_utils.h"
+
+#include <cmath>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
+// Sums all active tracks into a single output buffer with volume/pan per track.
 
 aaudio_data_callback_result_t aaudioDataCallback(
     AAudioStream *stream, void *userData, void *audioData, int32_t numFrames) {
 
     gCtl.callbackCount.fetch_add(1, std::memory_order_relaxed);
 
-    RingBuffer *rb = gCtl.ringBuf;
-    if (!rb || !gCtl.running) {
-        memset(audioData, 0, (size_t)numFrames * gCtl.outChannels * sizeof(float));
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    float *out = (float*)audioData;
+    int32_t ch = gCtl.outChannels;
+
+    // Zero output buffer
+    memset(out, 0, (size_t)numFrames * ch * sizeof(float));
+
+    int32_t maxFrames = 0;
+
+    // Sum all active tracks
+    for (int t = 0; t < MAX_TRACKS; t++) {
+        TrackState &trk = gCtl.tracks[t];
+        if (!trk.running || !trk.ringBuf) continue;
+
+        // Temp buffer on stack (max 2048 stereo frames = 16384 bytes)
+        float temp[4096];
+        int32_t frames = trk.ringBuf->pop(temp, numFrames, ch);
+        if (frames <= 0) continue;
+        if (frames > maxFrames) maxFrames = frames;
+
+        // Apply volume + constant-power pan
+        float vol = trk.volume;
+        float pan = trk.pan;
+        if (ch == 2) {
+            float angle = (pan + 1.0f) * 0.785398163f; // (pan+1)*pi/4
+            float cosP = cosf(angle);
+            float sinP = sinf(angle);
+            for (int32_t f = 0; f < frames; f++) {
+                int i = f * 2;
+                out[i]     += temp[i]   * cosP * vol;
+                out[i + 1] += temp[i+1] * sinP * vol;
+            }
+        } else {
+            for (int32_t i = 0; i < frames * ch; i++) {
+                out[i] += temp[i] * vol;
+            }
+        }
     }
 
-    int32_t frames = rb->pop((float*)audioData, numFrames, gCtl.outChannels);
-    gCtl.callbackFramesTotal.fetch_add(frames, std::memory_order_relaxed);
-    if (frames < numFrames) {
-        float *out = (float*)audioData;
-        memset(out + frames * gCtl.outChannels, 0,
-               (size_t)(numFrames - frames) * gCtl.outChannels * sizeof(float));
+    // Master volume
+    float mv = gCtl.masterVolume;
+    if (mv != 1.0f && maxFrames > 0) {
+        int32_t total = maxFrames * ch;
+        for (int i = 0; i < total; i++) out[i] *= mv;
     }
+
+    // Apply shared DSP (EQ)
+    if (gCtl.dsp && maxFrames > 0) {
+        gCtl.dsp->process(out, maxFrames, ch);
+    }
+
+    gCtl.callbackFramesTotal.fetch_add(maxFrames, std::memory_order_relaxed);
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
 extern "C" {
 
+// ─── Legacy single-track controls (operate on track 0) ─────────────────────
+
 EXPORT void stop_audio() {
-    stopEngine();
+    stopTrack(0);
+    // Check if all tracks stopped, then close stream
+    bool anyRunning = false;
+    for (int i = 0; i < MAX_TRACKS; i++)
+        if (gCtl.tracks[i].running) { anyRunning = true; break; }
+    if (!anyRunning && gCtl.stream) {
+        closeAAudioStream(gCtl.stream);
+        gCtl.stream = nullptr;
+        if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
+        gCtl.sampleRate = 0;
+        gCtl.outChannels = 0;
+    }
 }
 
 EXPORT void pause_audio() {
-    gCtl.paused = true;
+    gCtl.tracks[0].paused = true;
 }
 
 EXPORT void resume_audio() {
-    gCtl.paused = false;
+    gCtl.tracks[0].paused = false;
 }
 
 EXPORT int32_t seek_audio(int32_t positionMs) {
     if (gCtl.sampleRate <= 0) return -1;
     int64_t frame = (int64_t)positionMs * gCtl.sampleRate / 1000;
-    gCtl.seekToFrame = frame;
+    gCtl.tracks[0].seekToFrame = frame;
     return 0;
 }
 
 EXPORT int32_t get_position() {
     if (gCtl.sampleRate <= 0) return 0;
-    return (int32_t)(gCtl.writtenFrames.load() * 1000 / gCtl.sampleRate);
+    return (int32_t)(gCtl.tracks[0].writtenFrames.load() * 1000 / gCtl.sampleRate);
 }
 
 EXPORT int32_t get_duration() {
     if (gCtl.sampleRate <= 0) return 0;
-    return (int32_t)(gCtl.totalFrames * 1000 / gCtl.sampleRate);
+    return (int32_t)(gCtl.tracks[0].totalFrames * 1000 / gCtl.sampleRate);
 }
 
 EXPORT int32_t is_playing() {
-    return gCtl.running ? 1 : 0;
+    for (int i = 0; i < MAX_TRACKS; i++)
+        if (gCtl.tracks[i].running) return 1;
+    return 0;
 }
 
 EXPORT int32_t get_pcm_available() {
-    if (!gCtl.running || !gCtl.pcmRingBuf || gCtl.outChannels <= 0) return 0;
-    return gCtl.pcmRingBuf->available(gCtl.outChannels);
+    TrackState &trk = gCtl.tracks[0];
+    if (!trk.running || !trk.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    return trk.pcmRingBuf->available(gCtl.outChannels);
 }
 
 EXPORT int32_t read_pcm_samples(float *out, int32_t maxFrames) {
-    if (!gCtl.running || !gCtl.pcmRingBuf || gCtl.outChannels <= 0) return 0;
-    int32_t frames = gCtl.pcmRingBuf->pop(out, maxFrames, gCtl.outChannels);
-    return frames * gCtl.outChannels; // return total samples written
+    TrackState &trk = gCtl.tracks[0];
+    if (!trk.running || !trk.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    int32_t frames = trk.pcmRingBuf->pop(out, maxFrames, gCtl.outChannels);
+    return frames * gCtl.outChannels;
+}
+
+// ─── Multi-track controls ─────────────────────────────────────────────────
+
+EXPORT void track_stop(int32_t index) {
+    stopTrack(index);
+    // Close shared stream if no tracks remain
+    bool anyRunning = false;
+    for (int i = 0; i < MAX_TRACKS; i++)
+        if (gCtl.tracks[i].running) { anyRunning = true; break; }
+    if (!anyRunning && gCtl.stream) {
+        closeAAudioStream(gCtl.stream);
+        gCtl.stream = nullptr;
+        if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
+        gCtl.sampleRate = 0;
+        gCtl.outChannels = 0;
+    }
+}
+
+EXPORT void track_pause(int32_t index) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].paused = true;
+}
+
+EXPORT void track_resume(int32_t index) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].paused = false;
+}
+
+EXPORT int32_t track_seek(int32_t index, int32_t positionMs) {
+    if (index < 0 || index >= MAX_TRACKS) return -1;
+    TrackState &trk = gCtl.tracks[index];
+    if (trk.sampleRate <= 0) return -1;
+    int64_t frame = (int64_t)positionMs * trk.sampleRate / 1000;
+    trk.seekToFrame = frame;
+    return 0;
+}
+
+EXPORT int32_t track_get_position(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    TrackState &trk = gCtl.tracks[index];
+    if (trk.sampleRate <= 0) return 0;
+    return (int32_t)(trk.writtenFrames.load() * 1000 / trk.sampleRate);
+}
+
+EXPORT int32_t track_get_duration(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    TrackState &trk = gCtl.tracks[index];
+    if (trk.sampleRate <= 0) return 0;
+    return (int32_t)(trk.totalFrames * 1000 / trk.sampleRate);
+}
+
+EXPORT int32_t track_is_playing(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].running ? 1 : 0;
+}
+
+EXPORT void track_set_volume(int32_t index, float vol) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].volume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
+}
+
+EXPORT void track_set_pan(int32_t index, float pan) {
+    if (index >= 0 && index < MAX_TRACKS) {
+        if (pan < -1.0f) pan = -1.0f;
+        if (pan > 1.0f) pan = 1.0f;
+        gCtl.tracks[index].pan = pan;
+    }
+}
+
+EXPORT void mixer_set_master_volume(float vol) {
+    gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
+}
+
+// ─── EQ control exports ─────────────────────────────────────────────────────
+
+EXPORT void eq_set_band(int32_t index, int32_t type, double freq, double gain, double q) {
+    if (!gCtl.dsp) return;
+    gCtl.dsp->setBand(index, static_cast<FilterType>(type), freq, gain, q);
+}
+
+EXPORT void eq_set_band_enabled(int32_t index, int32_t enabled) {
+    if (!gCtl.dsp) return;
+    gCtl.dsp->setBandEnabled(index, enabled != 0);
+}
+
+EXPORT void eq_set_bypass(int32_t bypass) {
+    if (!gCtl.dsp) return;
+    gCtl.dsp->setBypass(bypass != 0);
+}
+
+EXPORT void eq_reset() {
+    if (!gCtl.dsp) return;
+    gCtl.dsp->resetAllBands();
 }
 
 }

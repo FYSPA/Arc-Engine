@@ -21,8 +21,9 @@
     <a href="./CONTRIBUTING.md">Contributing</a>
   </p>
   <div align="center">
-    <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <img src="https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter" alt="Flutter 3.44" />
+    <a href="https://pub.dev/packages/audio_engine"><img src="https://img.shields.io/pub/v/audio_engine" alt="pub.dev" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+    <img src="https://img.shields.io/badge/Flutter-3.22+-02569B?logo=flutter" alt="Flutter 3.22+" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
   </div>
   <br>
@@ -151,41 +152,42 @@ Arc Audio Engine (AAE) supports **FLAC, WAV, MP3, AAC, and OGG** formats with lo
 
 ### Prerequisites
 
-- Flutter SDK `3.44.5` (compatible with Dart `>=3.12.2`)
+- Flutter SDK `>=3.22.0` (compatible with Dart `>=3.4.0`)
 - Android device or emulator running **API 27+** (AAudio requirement)
 
 ### Installation
-
-1. **Clone the repository** and navigate to the example:
-   ```bash
-   cd audio_engine/example
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   flutter pub get
-   ```
-
-3. **Build & run:**
-   ```bash
-   flutter run
-   ```
-
-4. **Add audio files** using the **Pick Files** button in the app, or push files via adb:
-   ```bash
-   adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
-   ```
-   > The app uses `path_provider` for internal storage and `file_picker` (SAF) for importing audio files, bypassing Android 11+ scoped storage restrictions.
-
-### Using as a Dependency
 
 Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  audio_engine:
-    path: ./audio_engine
+  audio_engine: ^0.1.0
 ```
+
+Or install via command line:
+
+```bash
+dart pub add audio_engine
+flutter pub get
+```
+
+> The plugin only supports Android (API 27+). It uses AAudio's callback mode which was stabilized in Android 8.1.
+
+### Try the Example App
+
+```bash
+cd example
+flutter pub get
+flutter run
+```
+
+Add audio files using the **Pick Files** button in the app, or push files via adb:
+
+```bash
+adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
+```
+
+> The example app uses `path_provider` for internal storage and `file_picker` (SAF) for importing audio files, bypassing Android 11+ scoped storage restrictions.
 
 ---
 
@@ -427,7 +429,7 @@ Use the **Pick Files** button (bottom card) to open the system file picker. On A
 
 ## 📄 License
 
-Distributed under the MIT License.
+Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
 
 ---
 
@@ -437,8 +439,7 @@ Distributed under the MIT License.
     Made with <strong>Flutter</strong> + <strong>C++</strong> + <strong>FLAC</strong>
   </p>
   <p>
-    <a href="./CONTRIBUTING.md">Contributing</a> •
-    <a href="./ROADMAP.md">Roadmap</a>
+    <a href="./CONTRIBUTING.md">Contributing</a>
   </p>
   <br>
 </div>

@@ -8,6 +8,7 @@
 struct PlayState {
     FlacInfo info;
     AAudioStream *stream;
+    int trackIndex;
 };
 
 FLAC__StreamDecoderWriteStatus infoWriteCallback(
