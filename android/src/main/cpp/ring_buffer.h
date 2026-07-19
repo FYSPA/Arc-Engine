@@ -1,12 +1,18 @@
+// ---------------------------------------------------------------------------
+// File: ring_buffer.h
+// Purpose: Lock-free SPSC ring buffer for interleaved float samples.
+//          Fixed capacity of 65536 samples. One producer (decoder thread),
+//          one consumer (AAudio callback thread).
+// Importance: Core cross-thread audio transport. Used by every track.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>
 #include <atomic>
 #include <cstring>
-
-// SPSC lock-free ring buffer for interleaved float samples.
-// Capacity is fixed at 65536 samples (e.g. 32768 stereo frames).
-// One producer (decoder thread), one consumer (AAudio callback thread).
 
 class RingBuffer {
 public:

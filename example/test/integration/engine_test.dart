@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:audio_engine/audio_engine.dart';
-import 'package:audio_engine_example/widgets/app.dart';
+import 'package:arc_engine/arc_engine.dart';
+import 'package:arc_engine_example/widgets/app.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();

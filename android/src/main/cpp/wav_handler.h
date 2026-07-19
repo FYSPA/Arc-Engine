@@ -1,3 +1,11 @@
+// ---------------------------------------------------------------------------
+// File: wav_handler.h
+// Purpose: WAV RIFF parsing helpers and legacy play_wav export.
+// Importance: Enables WAV playback without the multi-track engine.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>

@@ -63,14 +63,17 @@ git checkout -b feature/short-descriptive-name
 
 # 4. Make your changes...
 # 5. Make sure everything works
-cd example
+dart format --output none --set-exit-if-changed .
 flutter analyze
 flutter test
 
-# 6. Commit with a clear message
+# 6. (Optional) Validate the package before publishing
+dart pub publish --dry-run
+
+# 7. Commit with a clear message
 git commit -m "feat: clear description of the change"
 
-# 7. Push and open a Pull Request
+# 8. Push and open a Pull Request
 git push origin feature/short-descriptive-name
 ```
 
@@ -80,6 +83,7 @@ git push origin feature/short-descriptive-name
 |--------|------------|
 | **Code style** | Follow existing conventions in the project |
 | **Commit messages** | Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, etc.) |
+| **Code formatting** | `dart format --output none --set-exit-if-changed .` must pass |
 | **Static analysis** | `flutter analyze` must pass with no errors |
 | **Tests** | `flutter test` + C++ tests must pass. Add tests for new functionality |
 | **Documentation** | Update README if your change modifies the API. Add dartdoc to all new public API members |
@@ -111,9 +115,9 @@ flutter run
 ### Project Structure
 
 ```
-audio_engine/
+arc_engine/
 ├── lib/
-│   ├── audio_engine.dart           # Library barrel file (re-exports)
+│   ├── arc_engine.dart           # Library barrel file (re-exports)
 │   └── src/
 │       ├── ffi_bindings.dart       # All FFI lookupFunction definitions
 │       ├── track_player.dart       # TrackPlayer with streams + Timer polling
@@ -134,7 +138,7 @@ audio_engine/
 │   ├── dsp_processor.h             # 10-band EQ with biquad filters
 │   └── libs/                       # Precompiled libraries (FLAC + Ogg)
 ├── test/
-│   ├── audio_engine_test.dart      # 10 tests — AudioEngine singleton, compat
+│   ├── arc_engine_test.dart      # 10 tests — AudioEngine singleton, compat
 │   ├── track_player_test.dart      # 14 tests — TrackPlayer lifecycle
 │   ├── pcm_stream_test.dart        # 6 tests — PcmStream emit/stop/dispose
 │   ├── fake_ffi.dart               # Mock FfiInterface for Dart tests

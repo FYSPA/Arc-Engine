@@ -1,7 +1,12 @@
-// ─── FFI exports (engine controls) ───────────────────────────────────────────
-// Multi-track mixer engine.
-// The AAudio callback sums all active tracks with volume/pan.
-// Legacy single-track controls are aliases for track 0.
+// ---------------------------------------------------------------------------
+// File: audio_engine.cpp
+// Purpose: AAudio data callback (high-priority audio thread) that sums all
+//          active tracks with per-track volume + constant-power pan + master
+//          volume + DSP EQ. Also exports legacy single-track FFI controls.
+// Importance: Runs in the audio callback thread. Must be lock-free and fast.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
 
 #include "dispatcher.h"
 #include "engine_state.h"

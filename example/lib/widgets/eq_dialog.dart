@@ -1,5 +1,14 @@
+// ---------------------------------------------------------------------------
+// File: eq_dialog.dart
+// Purpose: 10-band equalizer dialog with per-band gain sliders (-12 to +12 dB),
+//          bypass switch, and reset button. Controls the native DspProcessor.
+// Importance: UI for testing the EQ feature of the engine.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter/material.dart';
-import 'package:audio_engine/audio_engine.dart';
+import 'package:arc_engine/arc_engine.dart';
 
 class EqDialog extends StatefulWidget {
   const EqDialog({super.key});

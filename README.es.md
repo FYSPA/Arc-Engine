@@ -21,7 +21,7 @@
     <a href="./CONTRIBUTING.md">Contribuir</a>
   </p>
   <div align="center">
-    <a href="https://pub.dev/packages/audio_engine"><img src="https://img.shields.io/pub/v/audio_engine" alt="pub.dev" /></a>
+    <a href="https://pub.dev/packages/arc_engine"><img src="https://img.shields.io/pub/v/arc_engine" alt="pub.dev" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-blue.svg" alt="Licencia: MIT" /></a>
     <img src="https://img.shields.io/badge/Flutter-3.22+-02569B?logo=flutter" alt="Flutter 3.22+" />
     <img src="https://img.shields.io/badge/Android-API_27+-3DDC84?logo=android" alt="Android API 27+" />
@@ -56,6 +56,8 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 | **Streaming por URL** | Streaming HTTP nativo (API 29+) con fallback de descarga para dispositivos antiguos. Diálogo de URL configurable con barra de progreso y cancelación. |
 | **Reproducción Nativa** | AAudio callback con salida PCM float + buffer ring lock-free |
 | **Controles** | Pausa / Reanudar / Buscar / Detener con señalización eventfd |
+| **Mezclador multi-pista** | Hasta 4 pistas concurrentes con volumen, paneo y controles independientes |
+| **EQ DSP de 10 bandas** | Ecualizador global con tipos peaking, low/high-shelf y low/high-pass |
 | **PCM Stream a Dart** | Stream en tiempo real de samples PCM para visualización (VU meter, waveform) |
 | **Selector de archivos** | Importa archivos de audio via SAF (FLAC, WAV, MP3, AAC, OGG, M4A) |
 | **Puente FFI** | Comunicación directa C++ a Dart — sin platform channels |
@@ -69,7 +71,7 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 ┌──────────────────────────────────────────────────────────────┐
 │                     Flutter (Dart)                            │
 │  ┌───────────────────────────────────────────────────────┐   │
-│  │         AudioEngine (audio_engine.dart)                │   │
+│  │         AudioEngine (arc_engine.dart)                │   │
 │  │  startAudio() │ streamUrl() │ stop() │ pause()        │   │
 │  │  resume() │ seek() │ startPcmStream()                  │   │
 │  └───────────────┴────────────┴─────────┴────────────────┘   │
@@ -137,13 +139,13 @@ Añade a tu `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  audio_engine: ^0.1.0
+  arc_engine: ^0.1.0
 ```
 
 O via línea de comandos:
 
 ```bash
-dart pub add audio_engine
+dart pub add arc_engine
 flutter pub get
 ```
 
@@ -160,7 +162,7 @@ flutter run
 Agrega archivos de audio usando el botón **Pick Files** en la app, o via adb:
 
 ```bash
-adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_example/files/
+adb push test.flac /storage/emulated/0/Android/data/com.example.arc_engine_example/files/
 ```
 
 > La app ejemplo usa `path_provider` para el directorio interno y `file_picker` (SAF) para importar archivos de audio, sorteando las restricciones de scoped storage en Android 11+.
@@ -172,7 +174,7 @@ adb push test.flac /storage/emulated/0/Android/data/com.example.audio_engine_exa
 ### Iniciar Reproducción Local
 
 ```dart
-import 'package:audio_engine/audio_engine.dart';
+import 'package:arc_engine/arc_engine.dart';
 
 int resultado = AudioEngine.startAudio('/ruta/al/archivo.wav');
 if (resultado == 0) print('Reproducción iniciada!');
@@ -248,11 +250,62 @@ int dur = AudioEngine.getDuration();
 | Salida de Audio | **AAudio** (Android NDK) | Modo callback de baja latencia |
 | Buffer Ring | **SPSC Personalizado** | Lock-free single-producer single-consumer |
 | Señalización | **eventfd** | Señalización cross-thread via kernel |
+| DSP | **C++ Personalizado** | EQ biquad de 10 bandas con filtros peaking, shelf y pass |
 | Codecs Media | **AMediaCodec** (NDK) | Reproducción MP3, AAC, OGG |
 | Streaming URL | **AMediaExtractor** (NDK) | Streaming HTTP de audio (API 29+) |
 | Navegación archivos | **file_picker** | Importación de archivos via SAF |
 | Preferencias | **shared_preferences** | Persistencia de URL de streaming |
 | Almacenamiento | **path_provider** | Directorio interno de documentos |
+
+---
+
+## 📚 Referencia de API
+
+### `AudioEngine` — Orquestador central
+
+| Miembro | Descripción |
+|---------|-------------|
+| `AudioEngine.instance` | Acceso al singleton |
+| `masterVolume` | Obtener/ajustar volumen maestro (0.0–1.0) |
+| `tracks` | Lista inmutable de 4 [`TrackPlayer`] |
+| `startPcmStream(interval:)` | Iniciar stream PCM para visualización |
+| `stopPcmStream()` | Detener stream PCM |
+| `startAudio(ruta)` | *(legacy)* Iniciar reproducción local en pista 0 |
+| `streamUrl(url)` | *(legacy)* Streaming por URL en pista 0 |
+| `stop()` / `pause()` / `resume()` / `seek(ms)` | *(legacy)* Controles de transporte en pista 0 |
+| `setEqBand(i, type, freq, gain, q)` | Configurar banda EQ (global) |
+| `setEqBypass(bool)` / `resetEq()` | Controles globales de EQ |
+
+### `TrackPlayer` — Control por pista
+
+| Miembro | Descripción |
+|---------|-------------|
+| `play(ruta)` | Cargar e iniciar reproducción |
+| `stop()` / `pause()` / `resume()` | Controles de transporte |
+| `seek(Duration)` | Buscar posición |
+| `volume` / `pan` | Volumen por pista (0–1) / paneo (-1–1) |
+| `state` | [`PlaybackState`] actual |
+| `position` / `duration` | Posición actual / duración total |
+| `onStateChanged` | Stream de cambios de [`PlaybackState`] |
+| `onPositionChanged` | Stream de actualizaciones de posición [`Duration`] |
+| `dispose()` | Liberar recursos |
+
+### `PlaybackState` enumeración
+
+`stopped` — sin reproducción activa  
+`playing` — decodificando y reproduciendo activamente  
+`paused` — suspendido, posición preservada
+
+### `PcmStream` — PCM en tiempo real
+
+`start({interval})` → devuelve un `Stream<List<double>>` (broadcast) de samples float entrelazados (-1.0 a 1.0).  
+`stop()` / `dispose()` — detiene el stream.
+
+### `FlacInfo` — Estructura de metadatos FLAC
+
+Campos: `sampleRate`, `channels`, `bitsPerSample`, `totalSamples`, `durationMs`.
+
+> La documentación dartdoc completa está disponible en [pub.dev](https://pub.dev/documentation/arc_engine/latest/).
 
 ---
 
@@ -281,6 +334,15 @@ El streaming nativo via `AMediaExtractor_setDataSource()` requiere **Android API
 ### Qué nivel de API de Android se requiere?
 
 Se requiere API 27+ para AAudio. El plugin usa el modo callback de AAudio que fue estabilizado en Android 8.1 (API 27).
+
+### La licencia LGPL de FLAC afecta a mi app?
+
+Arc Audio Engine enlaza estáticamente `libFLAC` (Xiph.Org), que está bajo licencia **LGPL**. Al usar este plugin en tu app Flutter:
+
+- Debes cumplir con los términos de la LGPL para la librería FLAC
+- Dado que el plugin enlaza FLAC **estáticamente** en `libaudio_engine.so`, tu app debe permitir a los usuarios **reemplazar** la librería FLAC con una versión modificada
+- En la práctica, debes incluir un aviso (ej. en la pantalla "Acerca de" o "Licencias") creditando a Xiph.Org e indicando que FLAC está disponible bajo LGPL
+- La forma más sencilla de cumplir es usar el [`LicenseRegistry`](https://api.flutter.dev/flutter/foundation/LicenseRegistry-class.html) de Flutter o agregar una página de avisos de código abierto
 
 ### Cómo agrego archivos de audio desde mi dispositivo?
 

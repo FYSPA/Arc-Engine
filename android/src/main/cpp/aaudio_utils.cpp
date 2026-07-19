@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: aaudio_utils.cpp
+// Purpose: Implements AAudio stream creation (blocking and callback modes),
+//          stream closure, and blocking write helper.
+// Importance: Central AAudio utility used by all playback paths.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "aaudio_utils.h"
 #include "common.h"
 

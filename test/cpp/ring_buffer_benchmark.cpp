@@ -1,3 +1,13 @@
+// ---------------------------------------------------------------------------
+// File: ring_buffer_benchmark.cpp
+// Purpose: Latency benchmark for RingBuffer. Measures push+pop latency and
+//          throughput at various frame/channel sizes (including AAudio
+//          callback size: 192 stereo frames).
+// Importance: Validates RingBuffer performance budget (~14 µs for 192fr).
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include <cstdio>
 #include <chrono>
 #include "ring_buffer.h"

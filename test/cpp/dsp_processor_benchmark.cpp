@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: dsp_processor_benchmark.cpp
+// Purpose: Latency benchmark for DspProcessor. Measures processing time for
+//          0, 1, 5, and 10 EQ bands at various frame sizes.
+// Importance: Validates DSP fits within AAudio callback budget (< 1 ms).
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include <cstdio>
 #include <chrono>
 #include <cmath>

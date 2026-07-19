@@ -1,3 +1,20 @@
+// ---------------------------------------------------------------------------
+// File: audio_mixer.dart
+// Purpose: AudioEngine singleton — the central orchestrator. Holds up to 4
+//          TrackPlayer instances, master volume, PCM stream, and backward-
+//          compatible static API (startAudio/stop/pause/resume/seek) that
+//          delegates to track 0. Also exposes global EQ controls.
+// Importance: Main entry point for all consumers. Every app using the engine
+//             starts with AudioEngine.instance.
+// Missing: - No clipping protection in the mixer (multiple tracks sum can
+//            exceed 1.0f and clip at the DAC)
+//          - No sample-rate conversion when mixing tracks of different rates
+//          - No per-track EQ (only global DSP post-mix)
+// Known issues: `startAudio` has an unnecessary `as int` cast that triggers
+//               an analyzer warning. Some static methods read from _ffi
+//               directly instead of going through TrackPlayer.
+// ---------------------------------------------------------------------------
+
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
@@ -5,6 +22,13 @@ import 'ffi_bindings.dart' show FfiInterface, FlacInfo;
 import 'track_player.dart';
 import 'pcm_stream.dart';
 
+/// Central orchestrator for the native audio engine.
+///
+/// Singleton accessed via [AudioEngine.instance].  Manages 4 [TrackPlayer]s,
+/// master volume, PCM stream, and global DSP EQ.
+///
+/// Static methods (`startAudio`, `stop`, `pause`, etc.) delegate to track 0
+/// for backward compatibility with the legacy single-track API.
 class AudioEngine {
   static final AudioEngine _instance = AudioEngine._();
   static AudioEngine get instance => _instance;
@@ -18,6 +42,7 @@ class AudioEngine {
           List.generate(4, (i) => TrackPlayer(i)),
         );
 
+  /// Master output volume. 0.0 = silent, 1.0 = full. Clamped to 0.0–1.0.
   double get masterVolume => _masterVol;
   double _masterVol = 1.0;
   set masterVolume(double v) {
@@ -32,11 +57,11 @@ class AudioEngine {
 
   void stopPcmStream() => _pcmStream.stop();
 
-  // ─── Backward compat (estáticos, delegan a track 0) ────────────────
+  // ─── Backward compat (static, delegates to track 0) ──────────────────
 
   static TrackPlayer get _t0 => instance.tracks[0];
 
-  static int startAudio(String path) => _t0.play(path) as int;
+  static int startAudio(String path) => _t0.play(path);
 
   static int streamUrl(String url) {
     final ffi = FfiInterface.instance;

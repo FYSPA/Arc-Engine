@@ -1,0 +1,23 @@
+# Internal planning
+plan_*.md
+ROADMAP.md
+
+# Example app (not part of the plugin)
+example/
+
+# C++ test files (not needed at runtime)
+test/cpp/
+
+# Precompiled libraries headers (LGPL licensed)
+android/src/main/cpp/libs/include/
+
+# Build artifacts
+build/
+doc/
+
+# IDE / OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: flac_handler.h
+// Purpose: FLAC decoding callback declarations (metadata, write, error) and
+//          public exports (get_flac_info, play_flac).
+// Importance: Core FLAC support via libFLAC.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>

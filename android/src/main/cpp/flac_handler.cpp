@@ -1,3 +1,13 @@
+// ---------------------------------------------------------------------------
+// File: flac_handler.cpp
+// Purpose: FLAC decoding callbacks and public exports (get_flac_info,
+//          play_flac). Handles both legacy blocking and engine-based
+//          playback via flacEngineWriteCallback.
+// Importance: Core FLAC decode logic.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "flac_handler.h"
 #include "aaudio_utils.h"
 #include "engine_state.h"

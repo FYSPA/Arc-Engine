@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: engine_state.cpp
+// Purpose: Implementation of global engine state management: track lifecycle
+//          (stop, cleanup), free track search, and full engine shutdown.
+// Importance: Core lifecycle logic for the multi-track mixer.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "engine_state.h"
 #include "ring_buffer.h"
 #include "aaudio_utils.h"

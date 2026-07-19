@@ -1,3 +1,14 @@
+// ---------------------------------------------------------------------------
+// File: dsp_processor.h
+// Purpose: Real-time DSP processor with up to 10 biquad EQ bands (peaking,
+//          low/high shelf, low/high pass). All processing is inline for
+//          performance in the AAudio callback.
+// Importance: Provides per-track EQ processing in the high-priority audio
+//            thread.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>

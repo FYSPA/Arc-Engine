@@ -1,3 +1,13 @@
+// ---------------------------------------------------------------------------
+// File: engine_state.h
+// Purpose: Global engine state (EngineState, TrackState) and helper
+//          functions (resetCtl, stopTrack, stopAllTracks, findFreeTrack).
+// Importance: Central state shared between decoder threads and the AAudio
+//            callback. Core of the multi-track mixer.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <atomic>

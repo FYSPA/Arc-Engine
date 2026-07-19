@@ -1,7 +1,17 @@
+// ---------------------------------------------------------------------------
+// File: audio_engine_test.dart
+// Purpose: Unit tests for AudioEngine singleton, backward-compat static API
+//          (startAudio, stop, pause, resume, seek, getPosition, getDuration),
+//          and master volume clamping.
+// Importance: Ensures AudioEngine correctly delegates to FfiInterface.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fake_async/fake_async.dart';
-import 'package:audio_engine/audio_engine.dart';
-import 'package:audio_engine/src/ffi_bindings.dart';
+import 'package:arc_engine/arc_engine.dart';
+import 'package:arc_engine/src/ffi_bindings.dart';
 
 import 'fake_ffi.dart';
 

@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: aaudio_utils.h
+// Purpose: Helper functions for creating, writing to, and closing AAudio
+//          streams (blocking and callback-based).
+// Importance: Centralizes AAudio boilerplate used by all playback paths.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>

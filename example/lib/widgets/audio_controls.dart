@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: audio_controls.dart
+// Purpose: Row of format-specific playback buttons (FLAC, WAV, MP3, AAC,
+//          OGG, Stream) for the example app.
+// Importance: Provides quick-test UI for each audio format.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter/material.dart';
 
 class AudioControls extends StatelessWidget {
@@ -41,13 +50,21 @@ class AudioControls extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _formatButton(context, 'FLAC', Icons.music_note_rounded, onPlayFlac),
+                _formatButton(
+                    context, 'FLAC', Icons.music_note_rounded, onPlayFlac),
                 _formatButton(context, 'WAV', Icons.waves_rounded, onPlayWav),
-                if (onPlayMp3 != null) _formatButton(context, 'MP3', Icons.audio_file_rounded, onPlayMp3),
-                if (onPlayAac != null) _formatButton(context, 'AAC', Icons.audio_file_rounded, onPlayAac),
-                if (onPlayOgg != null) _formatButton(context, 'OGG', Icons.audio_file_rounded, onPlayOgg),
+                if (onPlayMp3 != null)
+                  _formatButton(
+                      context, 'MP3', Icons.audio_file_rounded, onPlayMp3),
+                if (onPlayAac != null)
+                  _formatButton(
+                      context, 'AAC', Icons.audio_file_rounded, onPlayAac),
+                if (onPlayOgg != null)
+                  _formatButton(
+                      context, 'OGG', Icons.audio_file_rounded, onPlayOgg),
                 if (onStream != null)
-                  _formatButton(context, 'Stream', Icons.cloud_download_rounded, onStream),
+                  _formatButton(context, 'Stream', Icons.cloud_download_rounded,
+                      onStream),
               ],
             ),
             if (isPlaying) ...[

@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: app.dart
+// Purpose: Root MaterialApp with dark theme for the audio_engine example.
+//          Sets up color scheme, card theme, app bar, and text styles.
+// Importance: Provides the visual foundation for the example app.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter/material.dart';
 
 import 'home_screen.dart';

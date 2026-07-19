@@ -1,6 +1,10 @@
-name: audio_engine
-description: Motor de audio nativo para Flutter con soporte FLAC.
-version: 0.0.1
+name: arc_engine
+description: Native multi-format audio playback engine for Flutter on Android. Supports FLAC, WAV, MP3, AAC, OGG with low-latency AAudio output, multi-track mixing, 10-band DSP EQ, and URL streaming.
+version: 0.1.0
+homepage: https://github.com/FYSPA/Arc-Engine
+repository: https://github.com/FYSPA/Arc-Engine
+issue_tracker: https://github.com/FYSPA/Arc-Engine/issues
+topics: [audio, ffi, android, flac, wav, mp3, aac, ogg, mixer, equalizer]
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -14,6 +18,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  fake_async: ^1.3.2
   flutter_lints: ^4.0.0
 
 flutter:

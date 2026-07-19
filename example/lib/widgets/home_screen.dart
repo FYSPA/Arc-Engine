@@ -1,7 +1,17 @@
+// ---------------------------------------------------------------------------
+// File: home_screen.dart
+// Purpose: Main screen of the example app. Manages audio file library,
+//          multi-track playback UI (4 track cards), stream URL dialog,
+//          download fallback, and PCM waveform visualization.
+// Importance: Primary UI for manual testing of all engine features.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:audio_engine/audio_engine.dart';
+import 'package:arc_engine/arc_engine.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -624,8 +634,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     } catch (_) {
                       sizeStr = '?';
                     }
-                    if (!File(path).existsSync())
+                    if (!File(path).existsSync()) {
                       return const SizedBox.shrink();
+                    }
                     return InkWell(
                       onTap: () => _assignToTrack(path, name),
                       child: Padding(

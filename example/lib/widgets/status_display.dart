@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: status_display.dart
+// Purpose: Status bar widget that shows the current engine status with
+//          contextual icon coloring (success/error/playing/idle).
+// Importance: Provides user feedback for engine operations.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter/material.dart';
 
 class StatusDisplay extends StatelessWidget {

@@ -1,5 +1,5 @@
-name: audio_engine_example
-description: Example app for audio_engine plugin.
+name: arc_engine_example
+description: Example app for arc_engine plugin.
 
 publish_to: "none"
 
@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  audio_engine:
+  arc_engine:
     path: ../
   file_picker: ^8.0.0
   shared_preferences: ^2.2.0

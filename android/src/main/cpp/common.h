@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: common.h
+// Purpose: Shared macros (LOGI, LOGE, EXPORT), FlacInfo struct, and
+//          AudioFormat enum used by all engine modules.
+// Importance: Every C++ file in the engine includes this header.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include <stdint.h>

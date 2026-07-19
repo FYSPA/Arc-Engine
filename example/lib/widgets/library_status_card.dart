@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: library_status_card.dart
+// Purpose: Card widget displaying native library load status. Shows OK/ERR
+//          badge and the status message from AudioEngine.
+// Importance: Verifies libaudio_engine.so is loaded correctly on the device.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter/material.dart';
 
 class LibraryStatusCard extends StatelessWidget {

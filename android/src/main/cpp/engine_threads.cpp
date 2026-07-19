@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: engine_threads.cpp
+// Purpose: Implementation of the four decoder thread types: WAV, FLAC, local
+//          media (AMediaCodec), and streaming media (URL-based).
+// Importance: Each thread decodes audio and pushes float PCM into RingBuffer.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "engine_threads.h"
 #include "engine_state.h"
 #include "ring_buffer.h"

@@ -1,7 +1,17 @@
+// ---------------------------------------------------------------------------
+// File: track_player_test.dart
+// Purpose: Unit tests for TrackPlayer: initial state, play/stop/pause/resume,
+//          volume/pan clamping, state stream events, seek, timer polling, and
+//          dispose.
+// Importance: Ensures TrackPlayer correctly wraps FFI calls and streams.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fake_async/fake_async.dart';
-import 'package:audio_engine/audio_engine.dart';
-import 'package:audio_engine/src/ffi_bindings.dart';
+import 'package:arc_engine/arc_engine.dart';
+import 'package:arc_engine/src/ffi_bindings.dart';
 
 import 'fake_ffi.dart';
 

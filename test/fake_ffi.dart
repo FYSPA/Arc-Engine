@@ -1,6 +1,15 @@
+// ---------------------------------------------------------------------------
+// File: fake_ffi.dart
+// Purpose: Mock implementation of FfiInterface for unit tests. Tracks
+//          playback state, position, volume, pan in-memory maps.
+// Importance: Enables deterministic testing without native library.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
-import 'package:audio_engine/src/ffi_bindings.dart';
+import 'package:arc_engine/src/ffi_bindings.dart';
 
 class FakeFfi implements FfiInterface {
   final Map<int, bool> _playing = {};

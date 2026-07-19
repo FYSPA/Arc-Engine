@@ -1,7 +1,16 @@
+// ---------------------------------------------------------------------------
+// File: pcm_visualizer.dart
+// Purpose: Real-time waveform visualizer that subscribes to PcmStream and
+//          renders samples as a line chart using CustomPainter.
+// Importance: Demonstrates PCM streaming API visually.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:audio_engine/audio_engine.dart';
+import 'package:arc_engine/arc_engine.dart';
 
 class PcmVisualizer extends StatefulWidget {
   const PcmVisualizer({super.key});

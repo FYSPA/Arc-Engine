@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: dispatcher.h
+// Purpose: FFI-exported C functions for track-based and legacy playback
+//          control, EQ configuration, and streaming.
+// Importance: The Dart FFI layer binds to these EXPORT symbols.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #pragma once
 
 #include "common.h"

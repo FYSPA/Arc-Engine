@@ -1,3 +1,14 @@
+// ---------------------------------------------------------------------------
+// File: dsp_processor_test.cpp
+// Purpose: Unit tests for DspProcessor: initial bypassed state, init enables,
+//          bypass no-op, setBand/enable, out-of-range safety, peaking filter
+//          zero-dB response, resetAllBands, low-pass/high-pass frequency
+//          response, zero frames safety, bypass toggle.
+// Importance: Verifies DSP filter correctness and edge-case safety.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>

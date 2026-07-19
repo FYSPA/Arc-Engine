@@ -1,3 +1,13 @@
+// ---------------------------------------------------------------------------
+// File: dispatcher.cpp
+// Purpose: FFI-exported C API implementation: track lifecycle (play/stop/
+//          pause/resume/seek), legacy single-track aliases, volume/pan
+//          controls, and EQ configuration.
+// Importance: The primary FFI surface consumed by Dart via dart:ffi.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "dispatcher.h"
 #include "engine_state.h"
 #include "engine_threads.h"

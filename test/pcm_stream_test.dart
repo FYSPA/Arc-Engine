@@ -1,7 +1,17 @@
+// ---------------------------------------------------------------------------
+// File: pcm_stream_test.dart
+// Purpose: Unit tests for PcmStream: constructor, stream emission at
+//          interval, multiple emissions, stop/dispose cancellation, and
+//          empty-stream behavior.
+// Importance: Ensures PCM streaming works correctly for waveform visualization.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fake_async/fake_async.dart';
-import 'package:audio_engine/src/pcm_stream.dart';
-import 'package:audio_engine/src/ffi_bindings.dart';
+import 'package:arc_engine/src/pcm_stream.dart';
+import 'package:arc_engine/src/ffi_bindings.dart';
 
 import 'fake_ffi.dart';
 

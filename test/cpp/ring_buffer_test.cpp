@@ -1,3 +1,13 @@
+// ---------------------------------------------------------------------------
+// File: ring_buffer_test.cpp
+// Purpose: Unit tests for RingBuffer: initial state, mono/stereo push/pop,
+//          wrap-around at boundary, buffer full/empty/partial push, reset,
+//          pacing threshold, interleaved stereo integrity.
+// Importance: Verifies lock-free SPSC ring buffer correctness.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>

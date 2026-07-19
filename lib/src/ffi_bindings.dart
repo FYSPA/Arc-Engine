@@ -1,3 +1,20 @@
+// ---------------------------------------------------------------------------
+// File: ffi_bindings.dart
+// Purpose: Defines all FFI lookupFunction bindings to the native
+//          libaudio_engine.so library. Also declares FfiInterface (abstract
+//          class for testability) and FlacInfo (native struct).
+// Importance: Single source of truth for Dart ↔ C++ FFI bridge. Every native
+//             call in the engine goes through this file. The FfiInterface
+//             abstraction enables full unit-testing without a real device.
+// Missing: - No iOS/macOS/Windows/Linux DynamicLibrary loading paths
+//          - lookupFunction errors could provide better diagnostics when the
+//            native .so fails to load
+// Known issues: DynamicLibrary.open('libaudio_engine.so') will throw on
+//               non-Android platforms; the Platform.isAndroid guard prevents
+//               this but non-Android fallback (DynamicLibrary.process()) is
+//               only suitable for testing on desktop
+// ---------------------------------------------------------------------------
+
 import 'dart:ffi';
 import 'dart:io';
 import 'package:ffi/ffi.dart';
@@ -6,6 +23,10 @@ final DynamicLibrary _lib = Platform.isAndroid
     ? DynamicLibrary.open('libaudio_engine.so')
     : DynamicLibrary.process();
 
+/// Native FLAC file information struct.
+///
+/// Returned by [FfiInterface.getFlacInfo], mirrors the C `FlacInfo` struct
+/// in `common.h`. Contains metadata from a FLAC file's STREAMINFO block.
 final class FlacInfo extends Struct {
   @Int64()
   external int totalSamples;
@@ -23,8 +44,12 @@ final class FlacInfo extends Struct {
   external int durationMs;
 }
 
-/// Interface for FFI-native operations. Tests can implement this with fake
-/// behavior to avoid needing the actual native library.
+/// Interface for FFI-native operations.
+///
+/// Tests can implement this with fake behavior to avoid needing the actual
+/// native library. Set via [FfiInterface.instance] setter.
+///
+/// All methods map directly to C EXPORT symbols in libaudio_engine.so.
 abstract class FfiInterface {
   int getFlacInfo(Pointer<Utf8> path, Pointer<FlacInfo> info);
   int playFlac(Pointer<Utf8> path);

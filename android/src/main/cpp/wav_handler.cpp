@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: wav_handler.cpp
+// Purpose: Legacy WAV playback via blocking AAudio stream. Parses RIFF
+//          header, converts PCM data to float, writes to AAudio.
+// Importance: Provides backward-compatible WAV playback.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "wav_handler.h"
 #include "aaudio_utils.h"
 #include "common.h"

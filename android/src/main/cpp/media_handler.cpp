@@ -1,3 +1,12 @@
+// ---------------------------------------------------------------------------
+// File: media_handler.cpp
+// Purpose: Legacy playback of compressed audio (MP3, AAC, OGG, M4A) via
+//          AMediaCodec + AMediaExtractor with blocking AAudio output.
+// Importance: Provides backward-compatible compressed audio playback.
+// Missing: None
+// Known issues: None
+// ---------------------------------------------------------------------------
+
 #include "media_handler.h"
 #include "aaudio_utils.h"
 #include "common.h"
