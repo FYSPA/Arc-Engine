@@ -1,14 +1,22 @@
-// ---------------------------------------------------------------------------
-// File: eq_dialog.dart
-// Purpose: 10-band equalizer dialog with per-band gain sliders (-12 to +12 dB),
-//          bypass switch, and reset button. Controls the native DspProcessor.
-// Importance: UI for testing the EQ feature of the engine.
-// Missing: None
-// Known issues: None
-// ---------------------------------------------------------------------------
-
 import 'package:flutter/material.dart';
 import 'package:arc_engine/arc_engine.dart';
+
+const _typeLabels = ['Pk', 'LS', 'HS', 'LP', 'HP'];
+const _typeNames = [
+  'Peaking',
+  'Low Shelf',
+  'High Shelf',
+  'Low Pass',
+  'High Pass'
+];
+
+const _filterTypes = [
+  AudioEngine.eqPeaking,
+  AudioEngine.eqLowShelf,
+  AudioEngine.eqHighShelf,
+  AudioEngine.eqLowPass,
+  AudioEngine.eqHighPass,
+];
 
 class EqDialog extends StatefulWidget {
   const EqDialog({super.key});
@@ -34,18 +42,14 @@ class _EqDialogState extends State<EqDialog> {
   ];
 
   final List<double> _gains = List.filled(10, 0.0);
+  final List<double> _qs = List.filled(10, 0.707);
+  final List<int> _types = List.filled(10, AudioEngine.eqPeaking);
   final List<bool> _enabled = List.filled(10, false);
 
-  @override
-  void dispose() {
-    super.dispose();
-  }
-
-  void _updateBand(int index, double gain) {
-    _gains[index] = gain;
-    _enabled[index] = gain != 0.0;
+  void _updateBand(int index) {
+    _enabled[index] = _gains[index] != 0.0;
     AudioEngine.setEqBand(
-        index, AudioEngine.eqPeaking, _bands[index].freq, gain, 0.707);
+        index, _types[index], _bands[index].freq, _gains[index], _qs[index]);
     AudioEngine.setEqBandEnabled(index, _enabled[index]);
   }
 
@@ -53,6 +57,8 @@ class _EqDialogState extends State<EqDialog> {
     setState(() {
       for (int i = 0; i < 10; i++) {
         _gains[i] = 0.0;
+        _qs[i] = 0.707;
+        _types[i] = AudioEngine.eqPeaking;
         _enabled[i] = false;
       }
       _bypass = false;
@@ -130,7 +136,7 @@ class _EqDialogState extends State<EqDialog> {
                     child: Row(
                       children: [
                         SizedBox(
-                          width: 48,
+                          width: 40,
                           child: Text(
                             _bands[i].label,
                             style: TextStyle(
@@ -142,6 +148,47 @@ class _EqDialogState extends State<EqDialog> {
                             ),
                           ),
                         ),
+                        SizedBox(
+                          width: 28,
+                          height: 20,
+                          child: PopupMenuButton<int>(
+                            initialValue: _types[i],
+                            padding: EdgeInsets.zero,
+                            tooltip: _typeNames[_types[i]],
+                            onSelected: (t) => setState(() {
+                              _types[i] = t;
+                              _updateBand(i);
+                            }),
+                            itemBuilder: (_) => List.generate(5, (ti) {
+                              return PopupMenuItem<int>(
+                                value: _filterTypes[ti],
+                                height: 28,
+                                child: Text(_typeLabels[ti],
+                                    style: const TextStyle(fontSize: 11)),
+                              );
+                            }),
+                            child: Container(
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: _enabled[i]
+                                    ? Colors.white.withValues(alpha: 0.1)
+                                    : Colors.white.withValues(alpha: 0.04),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                _typeLabels[_types[i]],
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontFamily: 'monospace',
+                                  color: _enabled[i]
+                                      ? Colors.white.withValues(alpha: 0.7)
+                                      : Colors.white.withValues(alpha: 0.25),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
                         Expanded(
                           child: SizedBox(
                             height: 24,
@@ -170,24 +217,70 @@ class _EqDialogState extends State<EqDialog> {
                                 min: -12.0,
                                 max: 12.0,
                                 divisions: 24,
-                                onChanged: (v) =>
-                                    setState(() => _updateBand(i, v)),
+                                onChanged: (v) => setState(() {
+                                  _gains[i] = v;
+                                  _updateBand(i);
+                                }),
                               ),
                             ),
                           ),
                         ),
+                        const SizedBox(width: 4),
                         SizedBox(
-                          width: 28,
-                          child: Text(
-                            '${_gains[i].toStringAsFixed(0)} dB',
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: _enabled[i]
-                                  ? Colors.white.withValues(alpha: 0.5)
-                                  : Colors.white.withValues(alpha: 0.2),
-                              fontFamily: 'monospace',
+                          width: 64,
+                          height: 24,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 2,
+                              thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 5),
+                              overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 8),
+                              activeTrackColor:
+                                  Colors.white.withValues(alpha: 0.4),
+                              inactiveTrackColor:
+                                  Colors.white.withValues(alpha: 0.08),
+                              thumbColor: Colors.white.withValues(alpha: 0.6),
+                              overlayColor:
+                                  Colors.white.withValues(alpha: 0.04),
                             ),
-                            textAlign: TextAlign.right,
+                            child: Slider(
+                              value: _qs[i],
+                              min: 0.1,
+                              max: 10.0,
+                              onChanged: (v) => setState(() {
+                                _qs[i] = double.parse(v.toStringAsFixed(2));
+                                _updateBand(i);
+                              }),
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 44,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                '${_gains[i].toStringAsFixed(0)} dB',
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  color: _enabled[i]
+                                      ? Colors.white.withValues(alpha: 0.5)
+                                      : Colors.white.withValues(alpha: 0.2),
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                              Text(
+                                'Q ${_qs[i].toStringAsFixed(1)}',
+                                style: TextStyle(
+                                  fontSize: 7,
+                                  color: _enabled[i]
+                                      ? Colors.white.withValues(alpha: 0.35)
+                                      : Colors.white.withValues(alpha: 0.15),
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],
