@@ -1,26 +1,11 @@
-// ---------------------------------------------------------------------------
-// File: audio_mixer.dart
-// Purpose: AudioEngine singleton — the central orchestrator. Holds up to 4
-//          TrackPlayer instances, master volume, PCM stream, and backward-
-//          compatible static API (startAudio/stop/pause/resume/seek) that
-//          delegates to track 0. Also exposes global EQ controls.
-// Importance: Main entry point for all consumers. Every app using the engine
-//             starts with AudioEngine.instance.
-// Missing: - No clipping protection in the mixer (multiple tracks sum can
-//            exceed 1.0f and clip at the DAC)
-//          - No sample-rate conversion when mixing tracks of different rates
-//          - No per-track EQ (only global DSP post-mix)
-// Known issues: `startAudio` has an unnecessary `as int` cast that triggers
-//               an analyzer warning. Some static methods read from _ffi
-//               directly instead of going through TrackPlayer.
-// ---------------------------------------------------------------------------
-
+import 'dart:async';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart' show FfiInterface, FlacInfo;
 import 'track_player.dart';
 import 'pcm_stream.dart';
+import 'audio_focus.dart' show AudioFocus, AudioFocusEvent;
 
 /// Central orchestrator for the native audio engine.
 ///
@@ -37,10 +22,86 @@ class AudioEngine {
   final List<TrackPlayer> tracks;
   final PcmStream _pcmStream = PcmStream();
 
+  // ─── Audio Focus state ────────────────────────────────────────────────
+  static bool _audioFocusEnabled = true;
+  static bool _pauseOnNotification = true;
+  static final List<int> _focusPausedTracks = [];
+  static bool _wasDucked = false;
+  static double _savedMasterVolume = 1.0;
+  static StreamSubscription<AudioFocusEvent>? _focusSub;
+
   AudioEngine._()
       : tracks = List.unmodifiable(
           List.generate(4, (i) => TrackPlayer(i)),
-        );
+        ) {
+    _initAudioFocus();
+  }
+
+  void _initAudioFocus() {
+    _focusSub = AudioFocus.events.listen(_onAudioFocusEvent);
+
+    for (final track in tracks) {
+      track.onStateChanged.listen((_) {
+        if (_audioFocusEnabled) _updateAudioFocus();
+      });
+    }
+  }
+
+  void _updateAudioFocus() {
+    final anyPlaying = tracks.any((t) => t.state == PlaybackState.playing);
+    if (anyPlaying) {
+      AudioFocus.request();
+    } else {
+      AudioFocus.abandon();
+    }
+  }
+
+  void _onAudioFocusEvent(AudioFocusEvent event) {
+    if (!_audioFocusEnabled) return;
+
+    switch (event) {
+      case AudioFocusEvent.gain:
+        for (final idx in _focusPausedTracks) {
+          if (idx >= 0 && idx < tracks.length) {
+            tracks[idx].resume();
+          }
+        }
+        _focusPausedTracks.clear();
+
+        if (_wasDucked) {
+          masterVolume = _savedMasterVolume;
+          _wasDucked = false;
+        }
+
+      case AudioFocusEvent.loss:
+        // Permanent loss (e.g. phone call, other app started).
+        // Pause all and never auto-resume until user acts.
+        _focusPausedTracks.clear();
+        for (final track in tracks) {
+          if (track.state == PlaybackState.playing) {
+            track.pause();
+          }
+        }
+
+      case AudioFocusEvent.lossTransient:
+        // Temporary loss (notification, navigation prompt).
+        if (_pauseOnNotification) {
+          for (final track in tracks) {
+            if (track.state == PlaybackState.playing) {
+              _focusPausedTracks.add(track.index);
+              track.pause();
+            }
+          }
+        }
+
+      case AudioFocusEvent.duck:
+        if (!_wasDucked) {
+          _savedMasterVolume = masterVolume;
+          masterVolume = _savedMasterVolume * 0.3;
+          _wasDucked = true;
+        }
+    }
+  }
 
   /// Master output volume. 0.0 = silent, 1.0 = full. Clamped to 0.0–1.0.
   double get masterVolume => _masterVol;
@@ -56,6 +117,51 @@ class AudioEngine {
       _pcmStream.start(interval: interval);
 
   void stopPcmStream() => _pcmStream.stop();
+
+  // ─── Audio Focus configuration ────────────────────────────────────────
+
+  /// Master switch for automatic audio focus handling.
+  ///
+  /// When enabled (default), the engine automatically requests audio focus
+  /// when a track starts playing and abandons it when all tracks stop.
+  /// Focus loss events are handled:
+  /// - Phone calls / permanent loss → pause all tracks (no auto-resume)
+  /// - Notifications (transient loss) → pause if [pauseOnNotification]
+  /// - Ducking → lower master volume to 30%, restore on gain
+  static bool get audioFocusEnabled => _audioFocusEnabled;
+  static set audioFocusEnabled(bool v) {
+    _audioFocusEnabled = v;
+    if (!v) {
+      AudioFocus.abandon();
+      if (_wasDucked) {
+        instance.masterVolume = _savedMasterVolume;
+        _wasDucked = false;
+      }
+    }
+  }
+
+  /// Whether to pause playback on transient focus loss (notifications).
+  ///
+  /// When `true` (default), the engine pauses all playing tracks when a
+  /// notification or other transient sound interrupts.  When `false`,
+  /// notifications are ignored (audio continues playing).
+  ///
+  /// Phone calls always pause regardless of this setting.
+  static bool get pauseOnNotification => _pauseOnNotification;
+  static set pauseOnNotification(bool v) {
+    _pauseOnNotification = v;
+    AudioFocus.setPauseOnNotification(v);
+  }
+
+  /// Stream of raw [AudioFocusEvent]s from the Android AudioManager.
+  ///
+  /// Use this if you need custom handling beyond the built-in auto-behavior:
+  /// ```dart
+  /// AudioEngine.onAudioFocusChange.listen((event) {
+  ///   if (event == AudioFocusEvent.loss) showBanner('Audio paused');
+  /// });
+  /// ```
+  static Stream<AudioFocusEvent> get onAudioFocusChange => AudioFocus.events;
 
   // ─── Backward compat (static, delegates to track 0) ──────────────────
 
@@ -166,4 +272,21 @@ class AudioEngine {
       FfiInterface.instance.eqSetBypass(bypass ? 1 : 0);
 
   static void resetEq() => FfiInterface.instance.eqReset();
+
+  // ─── Limiter ─────────────────────────────────────────────────────────
+  static bool _limiterEnabled = true;
+  static double _limiterThreshold = -0.5;
+
+  static bool get limiterEnabled => _limiterEnabled;
+  static double get limiterThreshold => _limiterThreshold;
+
+  static set limiterEnabled(bool v) {
+    _limiterEnabled = v;
+    FfiInterface.instance.limiterSetEnabled(v ? 1 : 0);
+  }
+
+  static set limiterThreshold(double db) {
+    _limiterThreshold = db.clamp(-60.0, 0.0);
+    FfiInterface.instance.limiterSetThreshold(_limiterThreshold);
+  }
 }

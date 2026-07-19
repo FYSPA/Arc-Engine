@@ -14,6 +14,7 @@
 #include "flac_handler.h"
 #include "common.h"
 #include "dsp_processor.h"
+#include "limiter.h"
 
 #include <cstdio>
 #include <cstring>
@@ -48,6 +49,7 @@ void wavPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
             LOGE("WAV thread[%d]: createAAudioStreamCallback failed", ti);
@@ -64,11 +66,20 @@ void wavPlaybackThread(int ti) {
     uint64_t _st = 0;
     read(trk.stopFd, &_st, sizeof(_st)); // Drain phantom data
 
-    while (trk.writtenFrames.load() < total) {
+    while (true) {
         _st = 0;
         if (read(trk.stopFd, &_st, sizeof(_st)) > 0) {
             LOGI("WAV thread[%d]: got stop signal", ti); break;
         }
+
+        // Loop: reset to beginning when track completes
+        if (trk.writtenFrames.load() >= total) {
+            if (trk.loop) {
+                trk.writtenFrames = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+            } else break;
+        }
+
         if (trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
@@ -164,6 +175,7 @@ void flacPlaybackThread(int ti) {
         gCtl.outChannels = ps.info.channels;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(ps.info.sampleRate, ps.info.channels);
+        if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(
             ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
@@ -183,8 +195,15 @@ void flacPlaybackThread(int ti) {
     uint64_t _stopFlac = 0;
     while (read(trk.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
         _stopFlac = 0;
-        if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples)
-            break;
+
+        // Loop: seek back to beginning when track completes
+        if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples) {
+            if (trk.loop) {
+                FLAC__stream_decoder_seek_absolute(decoder, 0);
+                trk.writtenFrames = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+            } else break;
+        }
 
         int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0) {
@@ -277,6 +296,7 @@ void mediaPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
             AMediaCodec_stop(codec); AMediaCodec_delete(codec);
@@ -307,7 +327,17 @@ void mediaPlaybackThread(int ti) {
             if (trk.ringBuf) trk.ringBuf->reset();
         }
 
-        if (outputDone && !trk.paused) break;
+        // Loop: seek back to beginning when track completes
+        if (outputDone && !trk.paused) {
+            if (trk.loop) {
+                AMediaExtractor_seekTo(extractor, 0, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
+                AMediaCodec_flush(codec);
+                inputDone = false;
+                outputDone = false;
+                trk.writtenFrames = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+            } else break;
+        }
 
         if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -449,6 +479,7 @@ void mediaStreamPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
             AMediaCodec_stop(codec); AMediaCodec_delete(codec);
@@ -481,7 +512,17 @@ void mediaStreamPlaybackThread(int ti) {
             if (trk.ringBuf) trk.ringBuf->reset();
         }
 
-        if (outputDone && !trk.paused) break;
+        // Loop: seek back to beginning when track completes
+        if (outputDone && !trk.paused) {
+            if (trk.loop) {
+                AMediaExtractor_seekTo(extractor, 0, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
+                AMediaCodec_flush(codec);
+                inputDone = false;
+                outputDone = false;
+                trk.writtenFrames = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+            } else break;
+        }
 
         if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));

@@ -95,6 +95,8 @@ int32_t track_play(int32_t index, const char* path) {
         trk.format = AudioFormat::WAV;
         trk.volume = 1.0f;
         trk.pan = 0.0f;
+        trk.mute = 0;
+        trk.solo = 0;
         trk.worker = std::thread(wavPlaybackThread, index);
         LOGI("track_play[%d]: WAV thread launched", index);
         return 0;
@@ -112,6 +114,8 @@ int32_t track_play(int32_t index, const char* path) {
         trk.format = AudioFormat::FLAC;
         trk.volume = 1.0f;
         trk.pan = 0.0f;
+        trk.mute = 0;
+        trk.solo = 0;
         trk.worker = std::thread(flacPlaybackThread, index);
         LOGI("track_play[%d]: FLAC thread launched", index);
         return 0;
@@ -130,6 +134,8 @@ int32_t track_play(int32_t index, const char* path) {
         trk.format = AudioFormat::MEDIA;
         trk.volume = 1.0f;
         trk.pan = 0.0f;
+        trk.mute = 0;
+        trk.solo = 0;
         trk.worker = std::thread(mediaPlaybackThread, index);
         LOGI("track_play[%d]: Media thread launched", index);
         return 0;

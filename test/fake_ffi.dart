@@ -18,6 +18,8 @@ class FakeFfi implements FfiInterface {
   final Map<int, int> _durations = {};
   final Map<int, double> _volumes = {};
   final Map<int, double> _pans = {};
+  final Map<int, bool> _mutes = {};
+  final Map<int, bool> _solos = {};
   double masterVol = 1.0;
   int _pcmAvailable = 0;
   List<double> _pcmSamples = [];
@@ -29,6 +31,8 @@ class FakeFfi implements FfiInterface {
   Map<int, int> get positions => _positions;
   Map<int, double> get volumes => _volumes;
   Map<int, double> get pans => _pans;
+  Map<int, bool> get mutes => _mutes;
+  Map<int, bool> get solos => _solos;
 
   void reset() {
     _playing.clear();
@@ -37,6 +41,8 @@ class FakeFfi implements FfiInterface {
     _durations.clear();
     _volumes.clear();
     _pans.clear();
+    _mutes.clear();
+    _solos.clear();
     masterVol = 1.0;
     _pcmAvailable = 0;
     _pcmSamples.clear();
@@ -175,4 +181,23 @@ class FakeFfi implements FfiInterface {
 
   @override
   void eqReset() {}
+
+  @override
+  void limiterSetEnabled(int enabled) {}
+
+  @override
+  void limiterSetThreshold(double db) {}
+
+  @override
+  void trackSetMute(int index, int mute) {
+    _mutes[index] = mute != 0;
+  }
+
+  @override
+  void trackSetSolo(int index, int solo) {
+    _solos[index] = solo != 0;
+  }
+
+  @override
+  void trackSetLoop(int index, int loop) {}
 }

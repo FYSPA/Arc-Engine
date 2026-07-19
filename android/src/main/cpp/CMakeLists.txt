@@ -30,6 +30,7 @@ add_library(audio_engine SHARED
     engine_threads.cpp
     dispatcher.cpp
     dsp_processor.cpp
+    limiter.cpp
 )
 
 target_compile_definitions(audio_engine PRIVATE __ANDROID_API__=29)

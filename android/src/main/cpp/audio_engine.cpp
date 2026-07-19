@@ -13,6 +13,7 @@
 #include "ring_buffer.h"
 #include "common.h"
 #include "dsp_processor.h"
+#include "limiter.h"
 #include "aaudio_utils.h"
 
 #include <cmath>
@@ -33,10 +34,17 @@ aaudio_data_callback_result_t aaudioDataCallback(
 
     int32_t maxFrames = 0;
 
+    // Check if any track has solo enabled
+    bool anySolo = false;
+    for (int s = 0; s < MAX_TRACKS; s++)
+        if (gCtl.tracks[s].solo) { anySolo = true; break; }
+
     // Sum all active tracks
     for (int t = 0; t < MAX_TRACKS; t++) {
         TrackState &trk = gCtl.tracks[t];
         if (!trk.running || !trk.ringBuf) continue;
+        if (trk.mute) continue;
+        if (anySolo && !trk.solo) continue;
 
         // Temp buffer on stack (max 2048 stereo frames = 16384 bytes)
         float temp[4096];
@@ -73,6 +81,11 @@ aaudio_data_callback_result_t aaudioDataCallback(
     // Apply shared DSP (EQ)
     if (gCtl.dsp && maxFrames > 0) {
         gCtl.dsp->process(out, maxFrames, ch);
+    }
+
+    // Apply limiter (post-EQ, protects against EQ boost + track summing)
+    if (gCtl.limiter && maxFrames > 0) {
+        gCtl.limiter->process(out, maxFrames, ch);
     }
 
     gCtl.callbackFramesTotal.fetch_add(maxFrames, std::memory_order_relaxed);
@@ -211,6 +224,21 @@ EXPORT void track_set_pan(int32_t index, float pan) {
     }
 }
 
+EXPORT void track_set_mute(int32_t index, int32_t mute) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].mute = mute != 0;
+}
+
+EXPORT void track_set_solo(int32_t index, int32_t solo) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].solo = solo != 0;
+}
+
+EXPORT void track_set_loop(int32_t index, int32_t loop) {
+    if (index >= 0 && index < MAX_TRACKS)
+        gCtl.tracks[index].loop = loop != 0;
+}
+
 EXPORT void mixer_set_master_volume(float vol) {
     gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
 }
@@ -235,6 +263,18 @@ EXPORT void eq_set_bypass(int32_t bypass) {
 EXPORT void eq_reset() {
     if (!gCtl.dsp) return;
     gCtl.dsp->resetAllBands();
+}
+
+// ─── Limiter exports ────────────────────────────────────────────────────────
+
+EXPORT void limiter_set_enabled(int32_t enabled) {
+    if (!gCtl.limiter) return;
+    gCtl.limiter->setEnabled(enabled != 0);
+}
+
+EXPORT void limiter_set_threshold(float db) {
+    if (!gCtl.limiter) return;
+    gCtl.limiter->setThresholdDb(db);
 }
 
 }

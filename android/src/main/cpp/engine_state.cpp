@@ -11,6 +11,7 @@
 #include "ring_buffer.h"
 #include "aaudio_utils.h"
 #include "dsp_processor.h"
+#include "limiter.h"
 
 #include <unistd.h>
 #include <sys/eventfd.h>
@@ -63,6 +64,9 @@ void stopTrack(int index) {
     trk.seekToFrame = -1;
     trk.volume = 1.0f;
     trk.pan = 0.0f;
+    trk.mute = 0;
+    trk.solo = 0;
+    trk.loop = 0;
 
     LOGI("stopTrack[%d]: done", index);
 }
@@ -94,6 +98,12 @@ static void cleanupEngine() {
     if (gCtl.dsp) {
         delete gCtl.dsp;
         gCtl.dsp = nullptr;
+    }
+
+    // Delete shared limiter
+    if (gCtl.limiter) {
+        delete gCtl.limiter;
+        gCtl.limiter = nullptr;
     }
 }
 

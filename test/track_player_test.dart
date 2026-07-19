@@ -108,6 +108,38 @@ void main() {
       expect(tp.pan, 1.0);
     });
 
+    test('mute default is false', () {
+      final tp = TrackPlayer(0);
+      expect(tp.mute, isFalse);
+      expect(ffi.mutes[0], isNull);
+    });
+
+    test('solo default is false', () {
+      final tp = TrackPlayer(0);
+      expect(tp.solo, isFalse);
+      expect(ffi.solos[0], isNull);
+    });
+
+    test('mute setter propagates to FFI', () {
+      final tp = TrackPlayer(0);
+      tp.mute = true;
+      expect(tp.mute, isTrue);
+      expect(ffi.mutes[0], isTrue);
+      tp.mute = false;
+      expect(tp.mute, isFalse);
+      expect(ffi.mutes[0], isFalse);
+    });
+
+    test('solo setter propagates to FFI', () {
+      final tp = TrackPlayer(0);
+      tp.solo = true;
+      expect(tp.solo, isTrue);
+      expect(ffi.solos[0], isTrue);
+      tp.solo = false;
+      expect(tp.solo, isFalse);
+      expect(ffi.solos[0], isFalse);
+    });
+
     test('onStateChanged emits on state transitions', () async {
       final tp = TrackPlayer(0);
       final states = <PlaybackState>[];

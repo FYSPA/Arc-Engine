@@ -17,6 +17,7 @@
 
 class RingBuffer;
 class DspProcessor;
+class Limiter;
 
 #define MAX_TRACKS 4
 
@@ -40,6 +41,9 @@ struct TrackState {
 
     volatile int running{0};
     volatile int paused{0};
+    volatile int mute{0};
+    volatile int solo{0};
+    volatile int loop{0};
     std::atomic<int64_t> seekToFrame{-1};
 
     float volume{1.0f};
@@ -51,6 +55,7 @@ struct EngineState {
     int32_t sampleRate{0}, outChannels{0};
 
     DspProcessor *dsp{nullptr};
+    Limiter *limiter{nullptr};
 
     TrackState tracks[MAX_TRACKS];
 

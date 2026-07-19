@@ -44,6 +44,9 @@ class TrackPlayer {
   Duration _duration = Duration.zero;
   double _volume = 1.0;
   double _pan = 0.0;
+  bool _mute = false;
+  bool _solo = false;
+  bool _loop = false;
 
   final StreamController<PlaybackState> _stateCtrl =
       StreamController<PlaybackState>.broadcast();
@@ -70,6 +73,15 @@ class TrackPlayer {
   /// Per-track pan. -1.0 = full left, 0.0 = center, 1.0 = full right.
   double get pan => _pan;
 
+  /// Whether this track is muted (silenced in the mix).
+  bool get mute => _mute;
+
+  /// Whether this track is soloed (only soloed tracks play).
+  bool get solo => _solo;
+
+  /// Whether this track loops (repeats from beginning when finished).
+  bool get loop => _loop;
+
   /// Sets per-track volume. Clamped to 0.0–1.0.
   set volume(double v) {
     _volume = v.clamp(0.0, 1.0);
@@ -80,6 +92,24 @@ class TrackPlayer {
   set pan(double p) {
     _pan = p.clamp(-1.0, 1.0);
     _ffi.trackSetPan(index, _pan);
+  }
+
+  /// Mutes or unmutes this track.
+  set mute(bool v) {
+    _mute = v;
+    _ffi.trackSetMute(index, v ? 1 : 0);
+  }
+
+  /// Enables or disables solo for this track.
+  set solo(bool v) {
+    _solo = v;
+    _ffi.trackSetSolo(index, v ? 1 : 0);
+  }
+
+  /// Enables or disables loop for this track.
+  set loop(bool v) {
+    _loop = v;
+    _ffi.trackSetLoop(index, v ? 1 : 0);
   }
 
   /// Starts playback of [path] on this track slot.

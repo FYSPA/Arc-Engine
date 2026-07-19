@@ -38,6 +38,9 @@ class _TrackUiState {
   double sliderValue = 0.0;
   double volume = 1.0;
   double pan = 0.0;
+  bool mute = false;
+  bool solo = false;
+  bool loop = false;
 
   _TrackUiState(this.player, this.label) {
     volume = player.volume;
@@ -835,6 +838,57 @@ class _HomeScreenState extends State<HomeScreen> {
                           const BoxConstraints(minWidth: 36, minHeight: 36),
                       padding: EdgeInsets.zero,
                     ),
+                    // Mute button
+                    IconButton(
+                      onPressed: () => setState(() {
+                        t.mute = !t.mute;
+                        t.player.mute = t.mute;
+                      }),
+                      icon: const Text('M',
+                          style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w700)),
+                      color: t.mute
+                          ? const Color(0xFFEF5350)
+                          : Colors.white.withValues(alpha: 0.35),
+                      constraints:
+                          const BoxConstraints(minWidth: 32, minHeight: 32),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'Mute',
+                    ),
+                    // Solo button
+                    IconButton(
+                      onPressed: () => setState(() {
+                        t.solo = !t.solo;
+                        t.player.solo = t.solo;
+                      }),
+                      icon: const Text('S',
+                          style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w700)),
+                      color: t.solo
+                          ? const Color(0xFFFFA726)
+                          : Colors.white.withValues(alpha: 0.35),
+                      constraints:
+                          const BoxConstraints(minWidth: 32, minHeight: 32),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'Solo',
+                    ),
+                    // Loop button
+                    IconButton(
+                      onPressed: () => setState(() {
+                        t.loop = !t.loop;
+                        t.player.loop = t.loop;
+                      }),
+                      icon: const Text('L',
+                          style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w700)),
+                      color: t.loop
+                          ? const Color(0xFF42A5F5)
+                          : Colors.white.withValues(alpha: 0.35),
+                      constraints:
+                          const BoxConstraints(minWidth: 32, minHeight: 32),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'Loop',
+                    ),
                     const Spacer(),
                     SizedBox(
                       width: 80,
@@ -955,6 +1009,104 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: const Icon(Icons.stop_rounded, size: 28),
                   color: Colors.white.withValues(alpha: 0.5),
                 ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text('Limiter',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.5))),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 22,
+                  child: Switch.adaptive(
+                    value: AudioEngine.limiterEnabled,
+                    onChanged: (v) =>
+                        setState(() => AudioEngine.limiterEnabled = v),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                if (AudioEngine.limiterEnabled) ...[
+                  const SizedBox(width: 4),
+                  Text('Thresh',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.limiterThreshold,
+                          min: -60.0,
+                          max: 0.0,
+                          divisions: 60,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.limiterThreshold = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 36,
+                    child: Text(
+                      '${AudioEngine.limiterThreshold.toStringAsFixed(1)} dB',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text('Audio Focus',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.5))),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 22,
+                  child: Switch.adaptive(
+                    value: AudioEngine.audioFocusEnabled,
+                    onChanged: (v) =>
+                        setState(() => AudioEngine.audioFocusEnabled = v),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                if (AudioEngine.audioFocusEnabled) ...[
+                  const SizedBox(width: 8),
+                  Text('Notif',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  SizedBox(
+                    height: 22,
+                    child: Switch.adaptive(
+                      value: AudioEngine.pauseOnNotification,
+                      onChanged: (v) =>
+                          setState(() => AudioEngine.pauseOnNotification = v),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ],
               ],
             ),
           ],

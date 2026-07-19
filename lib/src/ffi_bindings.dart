@@ -75,6 +75,9 @@ abstract class FfiInterface {
   int trackIsPlaying(int index);
   void trackSetVolume(int index, double vol);
   void trackSetPan(int index, double pan);
+  void trackSetMute(int index, int mute);
+  void trackSetSolo(int index, int solo);
+  void trackSetLoop(int index, int loop);
   void mixerSetMasterVolume(double vol);
 
   int getPcmAvailable();
@@ -84,6 +87,9 @@ abstract class FfiInterface {
   void eqSetBandEnabled(int index, int enabled);
   void eqSetBypass(int bypass);
   void eqReset();
+
+  void limiterSetEnabled(int enabled);
+  void limiterSetThreshold(double db);
 
   static FfiInterface get instance => FfiBindings.instance;
   static set instance(FfiInterface v) => FfiBindings._instanceForTest = v;
@@ -227,6 +233,24 @@ final class FfiBindings implements FfiInterface {
       void Function(int, double)>('track_set_pan');
 
   @override
+  void trackSetMute(int index, int mute) => _trackSetMute(index, mute);
+  late final _trackSetMute =
+      _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
+          'track_set_mute');
+
+  @override
+  void trackSetSolo(int index, int solo) => _trackSetSolo(index, solo);
+  late final _trackSetSolo =
+      _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
+          'track_set_solo');
+
+  @override
+  void trackSetLoop(int index, int loop) => _trackSetLoop(index, loop);
+  late final _trackSetLoop =
+      _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
+          'track_set_loop');
+
+  @override
   void mixerSetMasterVolume(double vol) => _mixerSetMasterVolume(vol);
   late final _mixerSetMasterVolume =
       _lib.lookupFunction<Void Function(Float), void Function(double)>(
@@ -270,4 +294,17 @@ final class FfiBindings implements FfiInterface {
   void eqReset() => _eqReset();
   late final _eqReset =
       _lib.lookupFunction<Void Function(), void Function()>('eq_reset');
+
+  // ─── Limiter ─────────────────────────────────────────────────────────
+  @override
+  void limiterSetEnabled(int enabled) => _limiterSetEnabled(enabled);
+  late final _limiterSetEnabled =
+      _lib.lookupFunction<Void Function(Int32), void Function(int)>(
+          'limiter_set_enabled');
+
+  @override
+  void limiterSetThreshold(double db) => _limiterSetThreshold(db);
+  late final _limiterSetThreshold =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'limiter_set_threshold');
 }
