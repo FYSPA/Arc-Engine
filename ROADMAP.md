@@ -38,8 +38,8 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P0.1 | **EQ** | Q ajustable por banda | Slider de Q (0.1–10) para controlar ancho de banda de cada filtro |
-| P0.2 | **EQ** | Tipo de filtro por banda | Selector por banda: Peak / Low Shelf / High Shelf / Low Pass / High Pass |
+| P0.1 | **EQ** | Q ajustable por banda | Slider de Q (0.1–10) para controlar ancho de banda de cada filtro | ✅ |
+| P0.2 | **EQ** | Tipo de filtro por banda | Selector por banda: Peak / Low Shelf / High Shelf / Low Pass / High Pass | ✅ |
 | P0.3 | **Mixer** | Mute / Solo por track | Botón para silenciar o aislar cada pista individualmente |
 | P0.4 | **Pipeline** | Limitador en el mixer | Protección de clipping al sumar múltiples pistas — hard/soft limiter post-mezcla |
 | P0.5 | **Mixer** | Loop por track | Repetir un track en loop sin afectar a los demás |
