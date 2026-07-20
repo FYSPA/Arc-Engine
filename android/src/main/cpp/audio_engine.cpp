@@ -14,6 +14,9 @@
 #include "common.h"
 #include "dsp_processor.h"
 #include "limiter.h"
+#include "effect.h"
+#include "compressor.h"
+#include "reverb.h"
 #include "aaudio_utils.h"
 
 #include <cmath>
@@ -83,7 +86,12 @@ aaudio_data_callback_result_t aaudioDataCallback(
         gCtl.dsp->process(out, maxFrames, ch);
     }
 
-    // Apply limiter (post-EQ, protects against EQ boost + track summing)
+    // Apply effect chain (post-EQ, pre-limiter — compressor, etc.)
+    if (gCtl.fxChain && maxFrames > 0) {
+        gCtl.fxChain->process(out, maxFrames, ch);
+    }
+
+    // Apply limiter (post-effects, protects against EQ + compressor boost)
     if (gCtl.limiter && maxFrames > 0) {
         gCtl.limiter->process(out, maxFrames, ch);
     }
@@ -107,6 +115,8 @@ EXPORT void stop_audio() {
         closeAAudioStream(gCtl.stream);
         gCtl.stream = nullptr;
         if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
+        if (gCtl.fxChain) { delete gCtl.fxChain; gCtl.fxChain = nullptr; }
+        if (gCtl.limiter) { delete gCtl.limiter; gCtl.limiter = nullptr; }
         gCtl.sampleRate = 0;
         gCtl.outChannels = 0;
     }
@@ -156,6 +166,26 @@ EXPORT int32_t read_pcm_samples(float *out, int32_t maxFrames) {
     return frames * gCtl.outChannels;
 }
 
+EXPORT int32_t track_get_pcm_available(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    TrackState &trk = gCtl.tracks[index];
+    if (!trk.running || !trk.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    return trk.pcmRingBuf->available(gCtl.outChannels);
+}
+
+EXPORT int32_t track_read_pcm_samples(int32_t index, float *out, int32_t maxFrames) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    TrackState &trk = gCtl.tracks[index];
+    if (!trk.running || !trk.pcmRingBuf || gCtl.outChannels <= 0) return 0;
+    int32_t frames = trk.pcmRingBuf->pop(out, maxFrames, gCtl.outChannels);
+    return frames * gCtl.outChannels;
+}
+
+EXPORT int32_t track_get_gap_less_version(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].gapLessVersion;
+}
+
 // ─── Multi-track controls ─────────────────────────────────────────────────
 
 EXPORT void track_stop(int32_t index) {
@@ -168,6 +198,8 @@ EXPORT void track_stop(int32_t index) {
         closeAAudioStream(gCtl.stream);
         gCtl.stream = nullptr;
         if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
+        if (gCtl.fxChain) { delete gCtl.fxChain; gCtl.fxChain = nullptr; }
+        if (gCtl.limiter) { delete gCtl.limiter; gCtl.limiter = nullptr; }
         gCtl.sampleRate = 0;
         gCtl.outChannels = 0;
     }
@@ -239,6 +271,20 @@ EXPORT void track_set_loop(int32_t index, int32_t loop) {
         gCtl.tracks[index].loop = loop != 0;
 }
 
+EXPORT void track_set_next(int32_t index, const char *path) {
+    if (index < 0 || index >= MAX_TRACKS) return;
+    if (!path || !path[0]) return;
+    strncpy(gCtl.tracks[index].nextPath, path, sizeof(gCtl.tracks[index].nextPath) - 1);
+    gCtl.tracks[index].hasNext = 1;
+    LOGI("track_set_next[%d]: %s", index, path);
+}
+
+EXPORT void track_clear_next(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return;
+    gCtl.tracks[index].hasNext = 0;
+    gCtl.tracks[index].nextPath[0] = '\0';
+}
+
 EXPORT void mixer_set_master_volume(float vol) {
     gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
 }
@@ -275,6 +321,113 @@ EXPORT void limiter_set_enabled(int32_t enabled) {
 EXPORT void limiter_set_threshold(float db) {
     if (!gCtl.limiter) return;
     gCtl.limiter->setThresholdDb(db);
+}
+
+// ─── FX Chain exports ───────────────────────────────────────────────────────
+
+EXPORT int32_t fx_add(const char *name) {
+    if (!gCtl.fxChain) return -1;
+    AudioEffect *existing = gCtl.fxChain->find(name);
+    if (existing) {
+        existing->setEnabled(true);
+        LOGI("fx_add: '%s' already in chain, enabled", name);
+        return 0;
+    }
+    auto it = fxRegistry().find(name);
+    if (it == fxRegistry().end()) { LOGE("fx_add: unknown effect '%s'", name); return -2; }
+    AudioEffect *fx = it->second();
+    gCtl.fxChain->add(fx);
+    LOGI("fx_add: '%s' added to chain", name);
+    return 0;
+}
+
+EXPORT int32_t fx_remove(const char *name) {
+    if (!gCtl.fxChain) return -1;
+    bool ok = gCtl.fxChain->remove(name);
+    if (ok) LOGI("fx_remove: '%s' removed", name);
+    return ok ? 0 : -2;
+}
+
+EXPORT void fx_clear() {
+    if (gCtl.fxChain) gCtl.fxChain->clear();
+}
+
+EXPORT int32_t fx_set_enabled(const char *name, int32_t enabled) {
+    if (!gCtl.fxChain) return -1;
+    AudioEffect *fx = gCtl.fxChain->find(name);
+    if (!fx) return -2;
+    fx->setEnabled(enabled != 0);
+    return 0;
+}
+
+// ─── Compressor exports ─────────────────────────────────────────────────────
+
+EXPORT void compressor_set_threshold(float db) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setThresholdDb(db);
+}
+
+EXPORT void compressor_set_ratio(float r) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setRatio(r);
+}
+
+EXPORT void compressor_set_attack(float ms) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setAttackMs(ms);
+}
+
+EXPORT void compressor_set_release(float ms) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setReleaseMs(ms);
+}
+
+EXPORT void compressor_set_knee(float db) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setKneeDb(db);
+}
+
+EXPORT void compressor_set_makeup(float db) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("compressor");
+    if (fx) static_cast<Compressor*>(fx)->setMakeupDb(db);
+}
+
+// ─── Reverb exports ─────────────────────────────────────────────────────────
+
+EXPORT void reverb_set_mix(float v) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("reverb");
+    if (fx) static_cast<Reverb*>(fx)->setMix(v);
+}
+
+EXPORT void reverb_set_decay(float v) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("reverb");
+    if (fx) static_cast<Reverb*>(fx)->setDecay(v);
+}
+
+EXPORT void reverb_set_room_size(float v) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("reverb");
+    if (fx) static_cast<Reverb*>(fx)->setRoomSize(v);
+}
+
+EXPORT void reverb_set_damping(float v) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("reverb");
+    if (fx) static_cast<Reverb*>(fx)->setDamping(v);
+}
+
+EXPORT void reverb_set_pre_delay(float ms) {
+    if (!gCtl.fxChain) return;
+    AudioEffect *fx = gCtl.fxChain->find("reverb");
+    if (fx) static_cast<Reverb*>(fx)->setPreDelayMs(ms);
 }
 
 }

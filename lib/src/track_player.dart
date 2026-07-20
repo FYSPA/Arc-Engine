@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import 'dart:async';
+import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart' show FfiInterface;
@@ -47,14 +48,20 @@ class TrackPlayer {
   bool _mute = false;
   bool _solo = false;
   bool _loop = false;
+  String _currentName = '';
+  String _nextName = '';
+  int _lastGapLessVersion = 0;
 
   final StreamController<PlaybackState> _stateCtrl =
       StreamController<PlaybackState>.broadcast();
   final StreamController<Duration> _posCtrl =
       StreamController<Duration>.broadcast();
+  final StreamController<String> _nameCtrl =
+      StreamController<String>.broadcast();
 
   Stream<PlaybackState> get onStateChanged => _stateCtrl.stream;
   Stream<Duration> get onPositionChanged => _posCtrl.stream;
+  Stream<String> get onNameChanged => _nameCtrl.stream;
 
   TrackPlayer(this.index);
 
@@ -112,6 +119,30 @@ class TrackPlayer {
     _ffi.trackSetLoop(index, v ? 1 : 0);
   }
 
+  /// Sets the next track to play automatically when this track finishes.
+  ///
+  /// The transition is gap-less — no silence between tracks. Set to
+  /// `null` or call [clearNextTrack] to remove the queued track.
+  void setNextTrack(String? path, {String? name}) {
+    if (path == null || path.isEmpty) {
+      _ffi.trackClearNext(index);
+      _nextName = '';
+    } else {
+      final pathPtr = path.toNativeUtf8();
+      try {
+        _ffi.trackSetNext(index, pathPtr);
+        _nextName = name ?? path.split('/').last;
+      } finally {
+        calloc.free(pathPtr);
+      }
+    }
+  }
+
+  /// Clears the queued next track for this track slot.
+  void clearNextTrack() {
+    _ffi.trackClearNext(index);
+  }
+
   /// Starts playback of [path] on this track slot.
   ///
   /// Stops any existing playback first. Returns 0 on success, negative on error.
@@ -122,6 +153,9 @@ class TrackPlayer {
       final result = _ffi.trackPlay(index, pathPtr);
       if (result == 0) {
         _state = PlaybackState.playing;
+        _currentName = path.split('/').last;
+        _lastGapLessVersion = _ffi.trackGetGapLessVersion(index);
+        _nameCtrl.add(_currentName);
         _stateCtrl.add(_state);
         _startPolling();
       }
@@ -163,10 +197,49 @@ class TrackPlayer {
     _posCtrl.add(_position);
   }
 
+  Timer? _pcmTimer;
+  StreamController<List<double>>? _pcmStreamCtrl;
+
+  /// Starts emitting PCM samples from this track's ring buffer.
+  ///
+  /// Returns a broadcast [Stream] of [List<double>] containing interleaved
+  /// float samples (-1.0 to 1.0). Call [stopPcmStream] to stop.
+  Stream<List<double>> startPcmStream({
+    Duration interval = const Duration(milliseconds: 50),
+  }) {
+    stopPcmStream();
+    final ctrl = StreamController<List<double>>.broadcast();
+    _pcmStreamCtrl = ctrl;
+    _pcmTimer = Timer.periodic(interval, (_) {
+      final available = _ffi.trackGetPcmAvailable(index);
+      if (available <= 0) return;
+      final frames = available > 512 ? 512 : available;
+      final buffer = calloc<Float>(frames * 2);
+      final samplesRead = _ffi.trackReadPcmSamples(index, buffer, frames);
+      if (samplesRead > 0) {
+        final count = samplesRead < 1024 ? samplesRead : 1024;
+        final samples =
+            List<double>.generate(count, (i) => buffer[i].toDouble());
+        ctrl.add(samples);
+      }
+      calloc.free(buffer);
+    });
+    return ctrl.stream;
+  }
+
+  /// Stops the PCM stream and releases resources.
+  void stopPcmStream() {
+    _pcmTimer?.cancel();
+    _pcmTimer = null;
+    _pcmStreamCtrl?.close();
+    _pcmStreamCtrl = null;
+  }
+
   /// Stops playback and releases stream controllers.
   ///
   /// After calling [dispose], the [TrackPlayer] should not be used again.
   void dispose() {
+    stopPcmStream();
     stop();
     _stateCtrl.close();
     _posCtrl.close();
@@ -176,6 +249,20 @@ class TrackPlayer {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       final playing = _ffi.trackIsPlaying(index) != 0;
+
+      // Detect gap-less transition
+      final curVersion = _ffi.trackGetGapLessVersion(index);
+      if (curVersion != _lastGapLessVersion) {
+        // ignore: avoid_print
+        print(
+            'TP[$index]: gapLess $_lastGapLessVersion->$curVersion nextName="$_nextName"');
+        if (_nextName.isNotEmpty) {
+          _lastGapLessVersion = curVersion;
+          _currentName = _nextName;
+          _nextName = '';
+          _nameCtrl.add(_currentName);
+        }
+      }
 
       if (playing) {
         final posMs = _ffi.trackGetPosition(index);

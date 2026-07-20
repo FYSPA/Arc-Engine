@@ -83,6 +83,8 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
 
     if (trk.ringBuf) {
         trk.ringBuf->push(floatBuf, frames, channels);
+        trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
+        if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
     }
     if (trk.pcmRingBuf) {
         trk.pcmRingBuf->push(floatBuf, frames, channels);

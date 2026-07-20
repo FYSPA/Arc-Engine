@@ -26,3 +26,6 @@ struct FlacInfo {
 };
 
 enum class AudioFormat { NONE, FLAC, WAV, MEDIA };
+
+#define FADE_FRAMES 256  // ~5.3ms fade at 48kHz for click-free stop/seek
+#define SEEKGAP_THRESHOLD 8192  // ~186ms at 44100Hz — trigger gapless when seek is this close to end

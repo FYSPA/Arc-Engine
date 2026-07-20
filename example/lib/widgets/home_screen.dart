@@ -8,6 +8,7 @@
 // Known issues: None
 // ---------------------------------------------------------------------------
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -19,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'library_status_card.dart';
 import 'status_display.dart';
 import 'pcm_visualizer.dart';
+import 'waveform_widget.dart';
 import 'eq_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -41,13 +43,47 @@ class _TrackUiState {
   bool mute = false;
   bool solo = false;
   bool loop = false;
+  List<double> waveformSamples = [];
+  StreamSubscription<List<double>>? _waveformSub;
 
-  _TrackUiState(this.player, this.label) {
-    volume = player.volume;
-    pan = player.pan;
-  }
+  StreamSubscription<String>? _nameSub;
+
+  _TrackUiState(this.player, this.label);
 
   int get index => player.index;
+
+  void startNameListener({VoidCallback? onNameChanged}) {
+    _nameSub?.cancel();
+    _nameSub = player.onNameChanged.listen((newName) {
+      debugPrint('startNameListener[${player.index}]: "$label" -> "$newName"');
+      label = newName;
+      onNameChanged?.call();
+    });
+  }
+
+  void startWaveformStream(VoidCallback onUpdate) {
+    _waveformSub?.cancel();
+    _waveformSub = null;
+    waveformSamples.clear();
+    player.stopPcmStream();
+    final stream = player.startPcmStream();
+    _waveformSub = stream.listen((samples) {
+      waveformSamples.addAll(samples);
+      while (waveformSamples.length > 60) {
+        waveformSamples.removeAt(0);
+      }
+      onUpdate();
+    });
+  }
+
+  void stopWaveformStream() {
+    _waveformSub?.cancel();
+    _waveformSub = null;
+    _nameSub?.cancel();
+    _nameSub = null;
+    waveformSamples.clear();
+    player.stopPcmStream();
+  }
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -59,6 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _libStatus = '...';
   bool _engineRunning = false;
   bool _enginePaused = false;
+  bool _showAdvancedCompressor = false;
   bool _downloading = false;
   double _downloadProgress = 0.0;
   int _downloadedBytes = 0;
@@ -220,12 +257,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _sliderValue = 0.0;
         final existing = _tracks.indexWhere((t) => t.index == idx);
         if (existing >= 0) {
+          _tracks[existing].stopWaveformStream();
           _tracks[existing].label = label;
           _tracks[existing].running = true;
           _tracks[existing].sliderValue = 0.0;
         } else {
           _tracks.add(_TrackUiState(player, label)..running = true);
         }
+        // Start name listener for gap-less tracking (re-subscribes if reused)
+        final wt = _tracks.firstWhere((t) => t.index == idx);
+        wt.startNameListener(onNameChanged: () => _reQueueNext(idx));
+        // Start waveform stream for this track
+        wt.startWaveformStream(() {
+          if (mounted) setState(() {});
+        });
       } else {
         _status = '$label: start error $result';
       }
@@ -239,6 +284,36 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     _startPlayback(path, label, trackIndex: slot);
+    // Auto-queue next file in the list for gap-less playback
+    final curIdx = _audioFiles.indexWhere((e) => e.path == path);
+    if (curIdx >= 0 && curIdx + 1 < _audioFiles.length) {
+      final nextPath = _audioFiles[curIdx + 1].path;
+      final nextName = _fileName(nextPath);
+      AudioEngine.instance.tracks[slot].setNextTrack(nextPath, name: nextName);
+      setState(() => _status = '$label → $nextName queued');
+    }
+  }
+
+  void _reQueueNext(int trackIndex) {
+    final t = _tracks.where((t) => t.index == trackIndex && t.running);
+    if (t.isEmpty) {
+      debugPrint('_reQueueNext[$trackIndex]: t.isEmpty ($_tracks)');
+      return;
+    }
+    final label = t.first.label;
+    final idx = _audioFiles.indexWhere((e) => _fileName(e.path) == label);
+    debugPrint(
+        '_reQueueNext[$trackIndex]: label="$label" idx=$idx audioFiles=${_audioFiles.length}');
+    if (idx < 0 || idx + 1 >= _audioFiles.length) {
+      debugPrint(
+          '_reQueueNext[$trackIndex]: no next file (idx=$idx, len=${_audioFiles.length})');
+      return;
+    }
+    final nextPath = _audioFiles[idx + 1].path;
+    final nextName = _fileName(nextPath);
+    debugPrint('_reQueueNext[$trackIndex]: queuing "$nextName"');
+    AudioEngine.instance.tracks[trackIndex]
+        .setNextTrack(nextPath, name: nextName);
   }
 
   Future<void> _pickAndPlayTrack() async {
@@ -799,6 +874,18 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                WaveformWidget(
+                  samples: t.waveformSamples,
+                  color: t.index == 0
+                      ? const Color(0xFF7C4DFF)
+                      : t.index == 1
+                          ? const Color(0xFF4CAF50)
+                          : t.index == 2
+                              ? const Color(0xFFFFA726)
+                              : const Color(0xFFEF5350),
+                  height: 40,
+                ),
                 Row(
                   children: [
                     IconButton(
@@ -823,6 +910,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     IconButton(
                       onPressed: () {
+                        t.stopWaveformStream();
                         t.player.stop();
                         setState(() {
                           t.running = false;
@@ -1062,6 +1150,494 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: 36,
                     child: Text(
                       '${AudioEngine.limiterThreshold.toStringAsFixed(1)} dB',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text('Compressor',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.5))),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 22,
+                  child: Switch.adaptive(
+                    value: AudioEngine.compressorEnabled,
+                    onChanged: (v) {
+                      setState(() => AudioEngine.compressorEnabled = v);
+                      if (!v) _showAdvancedCompressor = false;
+                    },
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                if (AudioEngine.compressorEnabled) ...[
+                  const SizedBox(width: 4),
+                  Text('Thresh',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorThreshold,
+                          min: -60.0,
+                          max: 0.0,
+                          divisions: 60,
+                          onChanged: (v) => setState(
+                              () => AudioEngine.compressorThreshold = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 36,
+                    child: Text(
+                      '${AudioEngine.compressorThreshold.toStringAsFixed(1)} dB',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Ratio',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorRatio,
+                          min: 1.0,
+                          max: 20.0,
+                          divisions: 38,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.compressorRatio = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${AudioEngine.compressorRatio.toStringAsFixed(1)}:1',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() =>
+                        _showAdvancedCompressor = !_showAdvancedCompressor),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      _showAdvancedCompressor ? 'Hide' : 'Adv',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (_showAdvancedCompressor && AudioEngine.compressorEnabled) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Text('Knee',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorKnee,
+                          min: 0.0,
+                          max: 12.0,
+                          divisions: 24,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.compressorKnee = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${AudioEngine.compressorKnee.toStringAsFixed(1)} dB',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Att',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorAttack,
+                          min: 0.1,
+                          max: 100.0,
+                          divisions: 99,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.compressorAttack = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${AudioEngine.compressorAttack.toStringAsFixed(1)} ms',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Rel',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorRelease,
+                          min: 10.0,
+                          max: 1000.0,
+                          divisions: 99,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.compressorRelease = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 32,
+                    child: Text(
+                      '${AudioEngine.compressorRelease.toStringAsFixed(0)} ms',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Make',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.compressorMakeup,
+                          min: 0.0,
+                          max: 24.0,
+                          divisions: 48,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.compressorMakeup = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 24,
+                    child: Text(
+                      '${AudioEngine.compressorMakeup.toStringAsFixed(1)} dB',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 6),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text('Reverb',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.5))),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 22,
+                  child: Switch.adaptive(
+                    value: AudioEngine.reverbEnabled,
+                    onChanged: (v) =>
+                        setState(() => AudioEngine.reverbEnabled = v),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                if (AudioEngine.reverbEnabled) ...[
+                  const SizedBox(width: 4),
+                  Text('Mix',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.reverbMix,
+                          min: 0.0,
+                          max: 1.0,
+                          divisions: 20,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.reverbMix = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${(AudioEngine.reverbMix * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Decay',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.reverbDecay,
+                          min: 0.1,
+                          max: 10.0,
+                          divisions: 99,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.reverbDecay = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 28,
+                    child: Text(
+                      '${AudioEngine.reverbDecay.toStringAsFixed(1)}s',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Room',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.reverbRoomSize,
+                          min: 0.0,
+                          max: 1.0,
+                          divisions: 20,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.reverbRoomSize = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 24,
+                    child: Text(
+                      '${(AudioEngine.reverbRoomSize * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Damp',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.reverbDamping,
+                          min: 0.0,
+                          max: 1.0,
+                          divisions: 20,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.reverbDamping = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 24,
+                    child: Text(
+                      '${(AudioEngine.reverbDamping * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Pre',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white.withValues(alpha: 0.35))),
+                  Expanded(
+                    child: SizedBox(
+                      height: 22,
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                          overlayShape:
+                              const RoundSliderOverlayShape(overlayRadius: 8),
+                        ),
+                        child: Slider(
+                          value: AudioEngine.reverbPreDelay,
+                          min: 0.0,
+                          max: 200.0,
+                          divisions: 40,
+                          onChanged: (v) =>
+                              setState(() => AudioEngine.reverbPreDelay = v),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${AudioEngine.reverbPreDelay.toStringAsFixed(0)}ms',
                       style: TextStyle(
                         fontSize: 9,
                         color: Colors.white.withValues(alpha: 0.4),

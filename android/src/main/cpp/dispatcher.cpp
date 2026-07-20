@@ -15,6 +15,9 @@
 #include "wav_handler.h"
 #include "flac_handler.h"
 #include "media_handler.h"
+#include "effect.h"
+#include "compressor.h"
+#include "reverb.h"
 #include "common.h"
 
 #include <cstdio>
@@ -23,6 +26,28 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
+
+// Static registration of built-in effects
+namespace {
+    bool _registered = false;
+    void ensureFxRegistry() {
+        if (!_registered) {
+            fxRegistry()["compressor"] = []{ return new Compressor(); };
+            fxRegistry()["reverb"] = []{ return new Reverb(); };
+            _registered = true;
+        }
+    }
+}
+
+// Creates the shared effect chain if not already created.
+void ensureFxChain(float sampleRate, int channels) {
+    ensureFxRegistry();
+    if (!gCtl.fxChain) {
+        gCtl.fxChain = new EffectChain();
+        gCtl.fxChain->initAll(sampleRate);
+        LOGI("Effect chain created (%d Hz, %d ch)", (int)sampleRate, channels);
+    }
+}
 
 // ─── track_play: start playback on a specific track slot ─────────────────────
 

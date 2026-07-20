@@ -78,10 +78,37 @@ abstract class FfiInterface {
   void trackSetMute(int index, int mute);
   void trackSetSolo(int index, int solo);
   void trackSetLoop(int index, int loop);
+  void trackSetNext(int index, Pointer<Utf8> path);
+  void trackClearNext(int index);
   void mixerSetMasterVolume(double vol);
 
   int getPcmAvailable();
   int readPcmSamples(Pointer<Float> buffer, int maxFrames);
+  int trackGetPcmAvailable(int index);
+  int trackReadPcmSamples(int index, Pointer<Float> buffer, int maxFrames);
+
+  // ─── FX Chain ────────────────────────────────────────────────────────
+  int fxAdd(Pointer<Utf8> name);
+  int fxRemove(Pointer<Utf8> name);
+  void fxClear();
+  int fxSetEnabled(Pointer<Utf8> name, int enabled);
+
+  int trackGetGapLessVersion(int index);
+
+  // ─── Compressor ──────────────────────────────────────────────────────
+  void compressorSetThreshold(double db);
+  void compressorSetRatio(double r);
+  void compressorSetAttack(double ms);
+  void compressorSetRelease(double ms);
+  void compressorSetKnee(double db);
+  void compressorSetMakeup(double db);
+
+  // ─── Reverb ──────────────────────────────────────────────────────────
+  void reverbSetMix(double v);
+  void reverbSetDecay(double v);
+  void reverbSetRoomSize(double v);
+  void reverbSetDamping(double v);
+  void reverbSetPreDelay(double ms);
 
   void eqSetBand(int index, int type, double freq, double gain, double q);
   void eqSetBandEnabled(int index, int enabled);
@@ -268,6 +295,132 @@ final class FfiBindings implements FfiInterface {
   late final _readPcmSamples = _lib.lookupFunction<
       Int32 Function(Pointer<Float>, Int32),
       int Function(Pointer<Float>, int)>('read_pcm_samples');
+
+  // ─── Gapless next-track ──────────────────────────────────────────
+  @override
+  void trackSetNext(int index, Pointer<Utf8> path) =>
+      _trackSetNext(index, path);
+  late final _trackSetNext = _lib.lookupFunction<
+      Void Function(Int32, Pointer<Utf8>),
+      void Function(int, Pointer<Utf8>)>('track_set_next');
+
+  @override
+  void trackClearNext(int index) => _trackClearNext(index);
+  late final _trackClearNext =
+      _lib.lookupFunction<Void Function(Int32), void Function(int)>(
+          'track_clear_next');
+
+  // ─── Per-track PCM Stream ──────────────────────────────────────────
+  @override
+  int trackGetPcmAvailable(int index) => _trackGetPcmAvailable(index);
+  late final _trackGetPcmAvailable =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_pcm_available');
+
+  @override
+  int trackReadPcmSamples(int index, Pointer<Float> buffer, int maxFrames) =>
+      _trackReadPcmSamples(index, buffer, maxFrames);
+  late final _trackReadPcmSamples = _lib.lookupFunction<
+      Int32 Function(Int32, Pointer<Float>, Int32),
+      int Function(int, Pointer<Float>, int)>('track_read_pcm_samples');
+
+  // ─── FX Chain ──────────────────────────────────────────────────────
+  @override
+  int fxAdd(Pointer<Utf8> name) => _fxAdd(name);
+  late final _fxAdd = _lib.lookupFunction<Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('fx_add');
+
+  @override
+  int fxRemove(Pointer<Utf8> name) => _fxRemove(name);
+  late final _fxRemove = _lib.lookupFunction<Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('fx_remove');
+
+  @override
+  void fxClear() => _fxClear();
+  late final _fxClear =
+      _lib.lookupFunction<Void Function(), void Function()>('fx_clear');
+
+  @override
+  int fxSetEnabled(Pointer<Utf8> name, int enabled) =>
+      _fxSetEnabled(name, enabled);
+  late final _fxSetEnabled = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Int32),
+      int Function(Pointer<Utf8>, int)>('fx_set_enabled');
+
+  // ─── Gap-less version ───────────────────────────────────────────────
+  @override
+  int trackGetGapLessVersion(int index) => _trackGetGapLessVersion(index);
+  late final _trackGetGapLessVersion =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_gap_less_version');
+
+  // ─── Compressor ──────────────────────────────────────────────────────
+  @override
+  void compressorSetThreshold(double db) => _compressorSetThreshold(db);
+  late final _compressorSetThreshold =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_threshold');
+
+  @override
+  void compressorSetRatio(double r) => _compressorSetRatio(r);
+  late final _compressorSetRatio =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_ratio');
+
+  @override
+  void compressorSetAttack(double ms) => _compressorSetAttack(ms);
+  late final _compressorSetAttack =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_attack');
+
+  @override
+  void compressorSetRelease(double ms) => _compressorSetRelease(ms);
+  late final _compressorSetRelease =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_release');
+
+  @override
+  void compressorSetKnee(double db) => _compressorSetKnee(db);
+  late final _compressorSetKnee =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_knee');
+
+  @override
+  void compressorSetMakeup(double db) => _compressorSetMakeup(db);
+  late final _compressorSetMakeup =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'compressor_set_makeup');
+
+  // ─── Reverb ──────────────────────────────────────────────────────────
+  @override
+  void reverbSetMix(double v) => _reverbSetMix(v);
+  late final _reverbSetMix =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'reverb_set_mix');
+
+  @override
+  void reverbSetDecay(double v) => _reverbSetDecay(v);
+  late final _reverbSetDecay =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'reverb_set_decay');
+
+  @override
+  void reverbSetRoomSize(double v) => _reverbSetRoomSize(v);
+  late final _reverbSetRoomSize =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'reverb_set_room_size');
+
+  @override
+  void reverbSetDamping(double v) => _reverbSetDamping(v);
+  late final _reverbSetDamping =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'reverb_set_damping');
+
+  @override
+  void reverbSetPreDelay(double ms) => _reverbSetPreDelay(ms);
+  late final _reverbSetPreDelay =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'reverb_set_pre_delay');
 
   // ─── EQ ─────────────────────────────────────────────────────────────
   @override

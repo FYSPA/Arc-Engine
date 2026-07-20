@@ -254,6 +254,121 @@ class AudioEngine {
     }
   }
 
+  // ─── Compressor ─────────────────────────────────────────────────────
+  static bool _compressorEnabled = false;
+  static double _compressorThreshold = -12.0;
+  static double _compressorRatio = 4.0;
+  static double _compressorAttack = 5.0;
+  static double _compressorRelease = 100.0;
+  static double _compressorKnee = 3.0;
+  static double _compressorMakeup = 0.0;
+
+  static bool get compressorEnabled => _compressorEnabled;
+  static double get compressorThreshold => _compressorThreshold;
+  static double get compressorRatio => _compressorRatio;
+  static double get compressorAttack => _compressorAttack;
+  static double get compressorRelease => _compressorRelease;
+  static double get compressorKnee => _compressorKnee;
+  static double get compressorMakeup => _compressorMakeup;
+
+  static set compressorEnabled(bool v) {
+    _compressorEnabled = v;
+    final name = 'compressor'.toNativeUtf8();
+    try {
+      if (v) {
+        FfiInterface.instance.fxAdd(name);
+      } else {
+        FfiInterface.instance.fxSetEnabled(name, 0);
+      }
+    } finally {
+      calloc.free(name);
+    }
+  }
+
+  static set compressorThreshold(double db) {
+    _compressorThreshold = db.clamp(-60.0, 0.0);
+    FfiInterface.instance.compressorSetThreshold(_compressorThreshold);
+  }
+
+  static set compressorRatio(double r) {
+    _compressorRatio = r.clamp(1.0, 20.0);
+    FfiInterface.instance.compressorSetRatio(_compressorRatio);
+  }
+
+  static set compressorAttack(double ms) {
+    _compressorAttack = ms.clamp(0.1, 100.0);
+    FfiInterface.instance.compressorSetAttack(_compressorAttack);
+  }
+
+  static set compressorRelease(double ms) {
+    _compressorRelease = ms.clamp(10.0, 1000.0);
+    FfiInterface.instance.compressorSetRelease(_compressorRelease);
+  }
+
+  static set compressorKnee(double db) {
+    _compressorKnee = db.clamp(0.0, 12.0);
+    FfiInterface.instance.compressorSetKnee(_compressorKnee);
+  }
+
+  static set compressorMakeup(double db) {
+    _compressorMakeup = db.clamp(0.0, 24.0);
+    FfiInterface.instance.compressorSetMakeup(_compressorMakeup);
+  }
+
+  // ─── Reverb ─────────────────────────────────────────────────────────
+  static bool _reverbEnabled = false;
+  static double _reverbMix = 0.3;
+  static double _reverbDecay = 2.0;
+  static double _reverbRoomSize = 0.5;
+  static double _reverbDamping = 0.5;
+  static double _reverbPreDelay = 20.0;
+
+  static bool get reverbEnabled => _reverbEnabled;
+  static double get reverbMix => _reverbMix;
+  static double get reverbDecay => _reverbDecay;
+  static double get reverbRoomSize => _reverbRoomSize;
+  static double get reverbDamping => _reverbDamping;
+  static double get reverbPreDelay => _reverbPreDelay;
+
+  static set reverbEnabled(bool v) {
+    _reverbEnabled = v;
+    final name = 'reverb'.toNativeUtf8();
+    try {
+      if (v) {
+        FfiInterface.instance.fxAdd(name);
+      } else {
+        FfiInterface.instance.fxSetEnabled(name, 0);
+      }
+    } finally {
+      calloc.free(name);
+    }
+  }
+
+  static set reverbMix(double v) {
+    _reverbMix = v.clamp(0.0, 1.0);
+    FfiInterface.instance.reverbSetMix(_reverbMix);
+  }
+
+  static set reverbDecay(double v) {
+    _reverbDecay = v.clamp(0.1, 10.0);
+    FfiInterface.instance.reverbSetDecay(_reverbDecay);
+  }
+
+  static set reverbRoomSize(double v) {
+    _reverbRoomSize = v.clamp(0.0, 1.0);
+    FfiInterface.instance.reverbSetRoomSize(_reverbRoomSize);
+  }
+
+  static set reverbDamping(double v) {
+    _reverbDamping = v.clamp(0.0, 1.0);
+    FfiInterface.instance.reverbSetDamping(_reverbDamping);
+  }
+
+  static set reverbPreDelay(double ms) {
+    _reverbPreDelay = ms.clamp(0.0, 200.0);
+    FfiInterface.instance.reverbSetPreDelay(_reverbPreDelay);
+  }
+
   // ─── EQ (global) ────────────────────────────────────────────────────
   static const int eqPeaking = 0;
   static const int eqLowShelf = 1;

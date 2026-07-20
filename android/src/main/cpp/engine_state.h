@@ -18,6 +18,7 @@
 class RingBuffer;
 class DspProcessor;
 class Limiter;
+class EffectChain;
 
 #define MAX_TRACKS 4
 
@@ -48,6 +49,11 @@ struct TrackState {
 
     float volume{1.0f};
     float pan{0.0f};
+    float lastFrame[2]{};
+
+    char nextPath[512]{0};
+    volatile int hasNext{0};
+    volatile int32_t gapLessVersion{0};
 };
 
 struct EngineState {
@@ -56,6 +62,7 @@ struct EngineState {
 
     DspProcessor *dsp{nullptr};
     Limiter *limiter{nullptr};
+    EffectChain *fxChain{nullptr};
 
     TrackState tracks[MAX_TRACKS];
 

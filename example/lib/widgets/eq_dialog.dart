@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:arc_engine/arc_engine.dart';
 
 const _sr = 44100.0;
@@ -95,6 +96,16 @@ const _filterTypes = [
   AudioEngine.eqHighPass,
 ];
 
+const _presetGains = <String, List<double>>{
+  'Flat': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  'Rock': [4, 2, 0, -1, -2, 0, 2, 3, 4, 3],
+  'Pop': [-1, 0, 1, 2, 3, 2, 1, 0, -1, -1],
+  'Jazz': [3, 3, 2, 1, 0, 0, 1, 2, 2, 1],
+  'Classical': [4, 3, 1, 0, 0, 0, 0, 1, 3, 4],
+};
+
+const _presetNames = ['Flat', 'Rock', 'Pop', 'Jazz', 'Classical'];
+
 class EqDialog extends StatefulWidget {
   const EqDialog({super.key});
 
@@ -105,6 +116,52 @@ class EqDialog extends StatefulWidget {
 class _EqDialogState extends State<EqDialog> {
   bool _bypass = false;
   int _expandedIndex = -1;
+  String _currentPreset = 'Flat';
+  bool _settingPreset = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SharedPreferences.getInstance().then((prefs) {
+        final name = prefs.getString('eq_preset') ?? 'Flat';
+        if (mounted && name != 'Flat' && _presetGains.containsKey(name)) {
+          _applyPreset(name);
+        }
+      });
+    });
+  }
+
+  Future<void> _savePreset(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('eq_preset', name);
+  }
+
+  void _applyPreset(String name) {
+    final gains = _presetGains[name];
+    if (gains == null) return;
+    _settingPreset = true;
+    setState(() {
+      _currentPreset = name;
+      for (int i = 0; i < 10; i++) {
+        _gains[i] = gains[i];
+        _qs[i] = 0.707;
+        _types[i] = AudioEngine.eqPeaking;
+        _enabled[i] = _gains[i] != 0.0;
+        _updateBand(i);
+      }
+      _expandedIndex = -1;
+    });
+    _settingPreset = false;
+    _savePreset(name);
+  }
+
+  void _onUserModified() {
+    if (!_settingPreset && _currentPreset != 'Custom') {
+      _currentPreset = 'Custom';
+      _savePreset('Custom');
+    }
+  }
 
   static const _bands = [
     (freq: 31.0, label: '31 Hz'),
@@ -132,16 +189,8 @@ class _EqDialogState extends State<EqDialog> {
   }
 
   void _reset() {
-    setState(() {
-      for (int i = 0; i < 10; i++) {
-        _gains[i] = 0.0;
-        _qs[i] = 0.707;
-        _types[i] = AudioEngine.eqPeaking;
-        _enabled[i] = false;
-      }
-      _bypass = false;
-      _expandedIndex = -1;
-    });
+    _applyPreset('Flat');
+    setState(() => _bypass = false);
     AudioEngine.resetEq();
     AudioEngine.setEqBypass(false);
   }
@@ -205,6 +254,55 @@ class _EqDialogState extends State<EqDialog> {
                   fontWeight: FontWeight.w600,
                   color: Colors.white.withValues(alpha: 0.9))),
           const Spacer(),
+          SizedBox(
+            height: 24,
+            child: PopupMenuButton<String>(
+              initialValue: _currentPreset,
+              padding: EdgeInsets.zero,
+              tooltip: 'Preset: $_currentPreset',
+              onSelected: _applyPreset,
+              itemBuilder: (_) => _presetNames.map((name) {
+                final active = name == _currentPreset;
+                return PopupMenuItem<String>(
+                  value: name,
+                  height: 28,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (active)
+                        const Icon(Icons.check,
+                            size: 14, color: Color(0xFF4CAF50)),
+                      if (!active) const SizedBox(width: 14),
+                      const SizedBox(width: 4),
+                      Text(name, style: const TextStyle(fontSize: 11)),
+                    ],
+                  ),
+                );
+              }).toList(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                height: 22,
+                decoration: BoxDecoration(
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_currentPreset,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.white.withValues(alpha: 0.6),
+                        )),
+                    Icon(Icons.arrow_drop_down,
+                        size: 14, color: Colors.white.withValues(alpha: 0.4)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
           SizedBox(
             height: 24,
             child: TextButton(
@@ -355,6 +453,7 @@ class _EqDialogState extends State<EqDialog> {
                                       divisions: 24,
                                       onChanged: (v) => setState(() {
                                         _gains[i] = v;
+                                        _onUserModified();
                                         _updateBand(i);
                                       }),
                                     ),
@@ -417,6 +516,7 @@ class _EqDialogState extends State<EqDialog> {
                                           onChanged: (v) => setState(() {
                                             _qs[i] = double.parse(
                                                 v.toStringAsFixed(2));
+                                            _onUserModified();
                                             _updateBand(i);
                                           }),
                                         ),
@@ -444,6 +544,7 @@ class _EqDialogState extends State<EqDialog> {
                                         tooltip: _typeNames[_types[i]],
                                         onSelected: (t) => setState(() {
                                           _types[i] = t;
+                                          _onUserModified();
                                           _updateBand(i);
                                         }),
                                         itemBuilder: (_) =>
@@ -498,6 +599,7 @@ class _EqDialogState extends State<EqDialog> {
                                         ),
                                         onPressed: () => setState(() {
                                           _enabled[i] = !_enabled[i];
+                                          _onUserModified();
                                           AudioEngine.setEqBandEnabled(
                                               i, _enabled[i]);
                                         }),

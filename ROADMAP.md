@@ -2,8 +2,9 @@
 
 ---
 
-## ✅ Completado (Fases 1–12)
+## ✅ Completado
 
+### Fases principales (1–12)
 | Fase | Descripción |
 |------|-------------|
 | **1** | **FFI Pipeline** — Dart ↔ C++ bridge funcional |
@@ -23,6 +24,31 @@
 | **12** | **Pruebas / Benchmarks** — 30 tests Dart, 22 tests C++, benchmarks RingBuffer y DSP |
 | **10.1** | **Guard contra archivos eliminados** — try-catch + existsSync() para evitar pantalla roja |
 
+### P0 — Alta prioridad
+| # | Área | Mejora | Archivos clave |
+|---|------|--------|----------------|
+| P0.1 | **EQ** | Q ajustable por banda | `dsp_processor.h`, `eq_dialog.dart` |
+| P0.2 | **EQ** | Tipo de filtro por banda (Peak/LS/HS/LP/HP) | `dsp_processor.h:24-28`, `eq_dialog.dart:82-89` |
+| P0.3 | **Mixer** | Mute / Solo por track | `engine_state.h:45-47`, `audio_engine.cpp:259-271`, `track_player.dart:104-119` |
+| P0.4 | **Pipeline** | Limitador post-mezcla (hard-clipper) | `limiter.cpp`, `audio_mixer.dart:391-406` |
+| P0.5 | **Mixer** | Loop por track | `engine_threads.cpp:91-93` (4 threads), `track_player.dart:117-119` |
+| P0.6 | **Android** | Audio Focus (ducking, pausa por notif) | `AudioEnginePlugin.kt`, `audio_focus.dart`, `audio_mixer.dart:25-164` |
+
+### P1 — Media prioridad
+| # | Área | Mejora | Archivos clave |
+|---|------|--------|----------------|
+| P1.1 | **EQ** | Presets (Flat/Rock/Pop/Jazz/Classical/Custom) | `eq_dialog.dart:99-107` |
+| P1.2 | **EQ** | Curva de respuesta frecuencia vs ganancia | `eq_dialog.dart:631-773` (CustomPaint, 200 puntos) |
+| P1.3 | **Mixer** | Fade-out en stop (256 samples, 4 threads) | `engine_threads.cpp:77-86` |
+| P1.5 | **UI** | Waveform por track (ring buffer PCM) | `home_screen.dart` (WaveformWidget en cada track card) |
+
+### P2 — Baja prioridad
+| # | Área | Mejora | Archivos clave |
+|---|------|--------|----------------|
+| P2.2 | **Pipeline** | Gap-less playback (encadenar tracks sin silencio) | `engine_threads.cpp` (flac_gapless, seek-to-end), `track_player.dart` (gapLessVersion polling) |
+| P2.4 | **DSP** | Compresor (threshold, ratio, knee, attack, release, makeup) | `compressor.cpp`, `audio_mixer.dart:257-316` |
+| P2.4 | **DSP** | Reverb (4 comb + 2 all-pass, pre-delay) | `reverb.cpp`, `audio_mixer.dart:318-370` |
+
 ### Configuración de publicación
 - **Paquete renombrado:** `audio_engine` → `arc_engine`
 - **Versión:** `0.1.0`
@@ -32,39 +58,25 @@
 
 ---
 
-## 📋 Próximos pasos
-
-### P0 — Alta prioridad
-
-| # | Área | Mejora | Descripción |
-|---|------|--------|-------------|
-| P0.1 | **EQ** | Q ajustable por banda | Slider de Q (0.1–10) para controlar ancho de banda de cada filtro | ✅ |
-| P0.2 | **EQ** | Tipo de filtro por banda | Selector por banda: Peak / Low Shelf / High Shelf / Low Pass / High Pass | ✅ |
-| P0.3 | **Mixer** | Mute / Solo por track | Botón para silenciar o aislar cada pista individualmente |
-| P0.4 | **Pipeline** | Limitador en el mixer | Protección de clipping al sumar múltiples pistas — hard/soft limiter post-mezcla |
-| P0.5 | **Mixer** | Loop por track | Repetir un track en loop sin afectar a los demás |
-| P0.6 | **Android** | Audio Focus | Pausar automáticamente al recibir llamada/notificación, reanudar al terminar. Manejar ducking y pérdida de foco transitoria/permanente |
+## 📋 Pendientes
 
 ### P1 — Media prioridad
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P1.1 | **EQ** | Presets | Flat, Rock, Pop, Jazz, Classical + custom, con persistencia en SharedPreferences |
-| P1.2 | **EQ** | Curva de respuesta | Gráfico frecuencia vs ganancia en tiempo real (CustomPaint) |
-| P1.3 | **Mixer** | Crossfade / Fade out | Micro-fade en stop/seek para eliminar clics audibles |
-| P1.4 | **UI** | Drag & drop reorder | Reordenar pistas visualmente (solo UI, índices C++ no cambian) |
-| P1.5 | **UI** | Waveform por track | Mostrar forma de onda en cada tarjeta usando el ring buffer de PCM |
+| P1.3b | **Mixer** | Crossfade entre tracks | Fundido cruzado durante transición gapless (actualmente hay fade-out en stop pero no crossfade entre canciones) |
+| P1.4 | **UI** | Drag & drop reorder | 🚫 Saltado — no se implementará |
 
 ### P2 — Baja prioridad
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P2.1 | **DSP** | EQ individual por track | Cada pista con su propio DspProcessor en vez de solo EQ global |
-| P2.2 | **Pipeline** | Gap-less playback | Encadenar tracks sin silencio entre ellos |
+| P2.1 | **DSP** | EQ individual por track | Cada pista con su propio `DspProcessor` (actualmente EQ es global: `gCtl.dsp`) |
 | P2.3 | **Pipeline** | Exportar mezcla a WAV | Mezclar todas las pistas activas y guardar como archivo WAV |
-| P2.4 | **DSP** | Efectos enchufables | Cadena de efectos modulares por track (Compresor, Reverb, Delay, Chorus) |
+| P2.4b | **DSP** | Delay / Echo | Efecto de delay standalone (el reverb usa líneas internas pero no hay delay independiente) |
+| P2.4c | **DSP** | Chorus | Efecto de chorus |
 | P2.5 | **DSP** | Sidechain | Compresión sidechain para ducking automático entre pistas |
-| P2.6 | **Grabación** | Entrada de micrófono | Pista en vivo desde el micrófono, mezclada con pistas locales (AAudio ya lo soporta nativamente) |
+| P2.6 | **Grabación** | Entrada de micrófono | Pista en vivo desde el micrófono, mezclada con pistas locales |
 
 ---
 

@@ -189,6 +189,55 @@ class FakeFfi implements FfiInterface {
   void limiterSetThreshold(double db) {}
 
   @override
+  int fxAdd(Pointer<Utf8> name) => 0;
+
+  @override
+  int fxRemove(Pointer<Utf8> name) => 0;
+
+  @override
+  void fxClear() {}
+
+  @override
+  int fxSetEnabled(Pointer<Utf8> name, int enabled) => 0;
+
+  @override
+  int trackGetGapLessVersion(int index) => 0;
+
+  @override
+  void compressorSetThreshold(double db) {}
+
+  @override
+  void compressorSetRatio(double r) {}
+
+  @override
+  void compressorSetAttack(double ms) {}
+
+  @override
+  void compressorSetRelease(double ms) {}
+
+  @override
+  void compressorSetKnee(double db) {}
+
+  @override
+  void compressorSetMakeup(double db) {}
+
+  // ─── Reverb ──────────────────────────────────────────────────────────
+  @override
+  void reverbSetMix(double v) {}
+
+  @override
+  void reverbSetDecay(double v) {}
+
+  @override
+  void reverbSetRoomSize(double v) {}
+
+  @override
+  void reverbSetDamping(double v) {}
+
+  @override
+  void reverbSetPreDelay(double ms) {}
+
+  @override
   void trackSetMute(int index, int mute) {
     _mutes[index] = mute != 0;
   }
@@ -200,4 +249,23 @@ class FakeFfi implements FfiInterface {
 
   @override
   void trackSetLoop(int index, int loop) {}
+
+  @override
+  void trackSetNext(int index, Pointer<Utf8> path) {}
+
+  @override
+  void trackClearNext(int index) {}
+
+  @override
+  int trackGetPcmAvailable(int index) => _pcmAvailable;
+
+  @override
+  int trackReadPcmSamples(int index, Pointer<Float> buffer, int maxFrames) {
+    final count =
+        _pcmSamples.length > maxFrames * 2 ? maxFrames * 2 : _pcmSamples.length;
+    for (int i = 0; i < count; i++) {
+      buffer[i] = _pcmSamples[i];
+    }
+    return count ~/ 2;
+  }
 }

@@ -12,6 +12,9 @@
 #include "ring_buffer.h"
 #include "aaudio_utils.h"
 #include "flac_handler.h"
+#include "wav_handler.h"
+#include "dispatcher.h"
+#include "effect.h"
 #include "common.h"
 #include "dsp_processor.h"
 #include "limiter.h"
@@ -50,6 +53,7 @@ void wavPlaybackThread(int ti) {
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
+        ensureFxChain((float)sr, ch);
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
             LOGE("WAV thread[%d]: createAAudioStreamCallback failed", ti);
@@ -69,7 +73,18 @@ void wavPlaybackThread(int ti) {
     while (true) {
         _st = 0;
         if (read(trk.stopFd, &_st, sizeof(_st)) > 0) {
-            LOGI("WAV thread[%d]: got stop signal", ti); break;
+            LOGI("WAV thread[%d]: got stop signal", ti);
+            // Fade-out: write FADE_FRAMES ramping from last sample to silence
+            if (trk.ringBuf && trk.writtenFrames > 0) {
+                float fadeBuf[FADE_FRAMES * ch];
+                for (int i = 0; i < FADE_FRAMES; i++) {
+                    float g = 1.0f - (float)i / FADE_FRAMES;
+                    for (int c = 0; c < ch; c++)
+                        fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+                }
+                trk.ringBuf->push(fadeBuf, FADE_FRAMES, ch);
+            }
+            break;
         }
 
         // Loop: reset to beginning when track completes
@@ -77,6 +92,33 @@ void wavPlaybackThread(int ti) {
             if (trk.loop) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+            } else if (trk.hasNext) {
+                LOGI("WAV thread[%d]: gapless: loading %s (wf=%lld total=%lld)",
+                     ti, trk.nextPath, (long long)trk.writtenFrames.load(), (long long)total);
+                int32_t res = loadWavIntoState(trk, trk.nextPath);
+                if (res == 0) {
+                    LOGI("WAV thread[%d]: gapless: load OK -> %s", ti, trk.nextPath);
+                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                    trk.gapLessVersion++;
+                    trk.hasNext = 0;
+                } else {
+                    LOGI("WAV thread[%d]: gapless: load failed %d", ti, res);
+                    // loadWavIntoState may have deleted old wavData even on error,
+                    // so refresh all locals to avoid dangling pointers
+                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                    trk.gapLessVersion++;
+                    trk.hasNext = 0;
+                }
+                // Refresh local variables — loadWavIntoState replaced everything
+                data = trk.wavData;
+                dataSize = trk.wavDataSize;
+                fs = trk.wavFrameSize;
+                sr = trk.sampleRate;
+                ch = trk.channels;
+                bps = trk.bitsPerSample;
+                total = trk.totalFrames;
+                LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
+                continue;
             } else break;
         }
 
@@ -89,6 +131,30 @@ void wavPlaybackThread(int ti) {
         if (seek >= 0) {
             trk.writtenFrames = seek < total ? seek : total;
             if (trk.ringBuf) trk.ringBuf->reset();
+            LOGI("WAV thread[%d]: seek to frame %lld (total=%lld)", ti, (long long)trk.writtenFrames.load(), (long long)total);
+            // If seek reached or passed the end, trigger gapless immediately
+            if (total - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
+                LOGI("WAV thread[%d]: seek-to-end -> forcing gapless transition", ti);
+                int32_t res = loadWavIntoState(trk, trk.nextPath);
+                if (res == 0) {
+                    LOGI("WAV thread[%d]: seek-gapless: load OK -> %s", ti, trk.nextPath);
+                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                    trk.gapLessVersion++;
+                } else {
+                    LOGI("WAV thread[%d]: seek-gapless: load failed %d", ti, res);
+                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                    trk.gapLessVersion++;
+                }
+                trk.hasNext = 0;
+                data = trk.wavData;
+                dataSize = trk.wavDataSize;
+                fs = trk.wavFrameSize;
+                sr = trk.sampleRate;
+                ch = trk.channels;
+                bps = trk.bitsPerSample;
+                total = trk.totalFrames;
+                LOGI("WAV thread[%d]: seek-gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
+            }
         }
 
         if (trk.ringBuf && trk.ringBuf->available(ch) > threshold) {
@@ -118,6 +184,10 @@ void wavPlaybackThread(int ti) {
         if (trk.ringBuf) {
             int32_t pushed = trk.ringBuf->push(floatBuf, chunk, ch);
             trk.writtenFrames += pushed;
+            if (pushed > 0) {
+                trk.lastFrame[0] = floatBuf[(pushed - 1) * ch];
+                if (ch > 1) trk.lastFrame[1] = floatBuf[(pushed - 1) * ch + 1];
+            }
         }
         if (trk.pcmRingBuf) {
             trk.pcmRingBuf->push(floatBuf, chunk, ch);
@@ -127,10 +197,11 @@ void wavPlaybackThread(int ti) {
     LOGI("WAV thread[%d]: loop exit wf=%lld total=%lld", ti,
          (long long)trk.writtenFrames.load(), (long long)total);
 
-    // Drain ring buffer
-    if (trk.writtenFrames >= total && trk.ringBuf) {
-        while (trk.ringBuf->available(ch) > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Drain ring buffer so fade-out / last data is consumed before cleanup
+    if (trk.ringBuf) {
+        int to = 100;
+        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     delete[] data;
@@ -176,6 +247,7 @@ void flacPlaybackThread(int ti) {
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(ps.info.sampleRate, ps.info.channels);
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
+        ensureFxChain((float)ps.info.sampleRate, ps.info.channels);
         gCtl.stream = createAAudioStreamCallback(
             ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
@@ -198,19 +270,84 @@ void flacPlaybackThread(int ti) {
 
         // Loop: seek back to beginning when track completes
         if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples) {
+            LOGI("FLAC thread[%d]: natural-end detected wf=%lld total=%lld loop=%d hasNext=%d",
+                 ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
+                 trk.loop, trk.hasNext);
             if (trk.loop) {
                 FLAC__stream_decoder_seek_absolute(decoder, 0);
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+            } else if (trk.hasNext) {
+              flac_gapless:
+                FLAC__stream_decoder_finish(decoder);
+                FLAC__stream_decoder_delete(decoder);
+                decoder = FLAC__stream_decoder_new();
+                if (!decoder) break;
+                FLAC__stream_decoder_set_metadata_respond_all(decoder);
+                st = FLAC__stream_decoder_init_file(
+                    decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+                if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+                    FLAC__stream_decoder_delete(decoder);
+                    trk.hasNext = 0;
+                    break;
+                }
+                FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+                if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+                    trk.hasNext = 0;
+                    break;
+                }
+                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                trk.gapLessVersion++;
+                trk.hasNext = 0;
+                trk.sampleRate = ps.info.sampleRate;
+                trk.channels = ps.info.channels;
+                trk.totalFrames = ps.info.totalSamples;
+                trk.writtenFrames = 0;
+                ch = ps.info.channels;
+                threshold = RingBuffer::pacingThreshold(ch);
+                if (trk.ringBuf) trk.ringBuf->reset();
+                LOGI("FLAC thread[%d]: gapless -> %s", ti, trk.path);
+                continue;
             } else break;
         }
 
         int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0) {
+            LOGI("FLAC thread[%d]: SEEK seek=%lld totalFrames=%lld totalSamples=%lld remaining=%lld hasNext=%d loop=%d",
+                 ti, (long long)seek, (long long)trk.totalFrames, (long long)ps.info.totalSamples,
+                 (long long)(trk.totalFrames - seek), trk.hasNext, trk.loop);
             if (seek < ps.info.totalSamples || ps.info.totalSamples == 0) {
                 FLAC__stream_decoder_seek_absolute(decoder, seek);
                 trk.writtenFrames = seek;
                 if (trk.ringBuf) trk.ringBuf->reset();
+            }
+            // If seek reaches/passes end and next track is queued, trigger gapless immediately
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
+                LOGI("FLAC thread[%d]: seek-to-end -> forcing gapless transition", ti);
+                FLAC__stream_decoder_finish(decoder);
+                FLAC__stream_decoder_delete(decoder);
+                decoder = FLAC__stream_decoder_new();
+                if (decoder) {
+                    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+                    st = FLAC__stream_decoder_init_file(
+                        decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+                    if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+                        FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+                        if (ps.info.sampleRate > 0 && ps.info.channels > 0) {
+                            strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                            trk.gapLessVersion++;
+                            trk.hasNext = 0;
+                            trk.sampleRate = ps.info.sampleRate;
+                            trk.channels = ps.info.channels;
+                            trk.totalFrames = ps.info.totalSamples;
+                            trk.writtenFrames = 0;
+                            ch = ps.info.channels;
+                            threshold = RingBuffer::pacingThreshold(ch);
+                            if (trk.ringBuf) trk.ringBuf->reset();
+                            LOGI("FLAC thread[%d]: seek-gapless -> %s", ti, trk.path);
+                        }
+                    }
+                }
             }
         }
 
@@ -225,13 +362,35 @@ void flacPlaybackThread(int ti) {
         }
 
         if (!FLAC__stream_decoder_process_single(decoder)) break;
-        if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) break;
+        if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) {
+            LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d",
+                 ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
+                 trk.hasNext, trk.loop);
+            if (trk.hasNext && !trk.loop) {
+                LOGI("FLAC thread[%d]: EOS -> goto flac_gapless", ti);
+                goto flac_gapless;
+            }
+            LOGI("FLAC thread[%d]: EOS -> break (no transition)", ti);
+            break;
+        }
     }
 
-    bool finished = (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples);
-    if (finished && trk.ringBuf) {
-        while (trk.ringBuf->available(ch) > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Fade-out: write FADE_FRAMES ramping from last sample to silence
+    if (trk.ringBuf && trk.writtenFrames > 0) {
+        float fadeBuf[FADE_FRAMES * ch];
+        for (int i = 0; i < FADE_FRAMES; i++) {
+            float g = 1.0f - (float)i / FADE_FRAMES;
+            for (int c = 0; c < ch; c++)
+                fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+        }
+        trk.ringBuf->push(fadeBuf, FADE_FRAMES, ch);
+    }
+
+    // Drain ring buffer so fade-out / last data is consumed before cleanup
+    if (trk.ringBuf) {
+        int to = 100;
+        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     FLAC__stream_decoder_finish(decoder);
@@ -325,6 +484,11 @@ void mediaPlaybackThread(int ti) {
             outputDone = false;
             trk.writtenFrames = seek;
             if (trk.ringBuf) trk.ringBuf->reset();
+            // If seek reaches/passes end and next track is queued, force gapless
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop && trk.totalFrames > 0) {
+                LOGI("Media thread[%d]: seek-to-end -> forcing gapless transition", ti);
+                goto media_force_gapless;
+            }
         }
 
         // Loop: seek back to beginning when track completes
@@ -336,6 +500,56 @@ void mediaPlaybackThread(int ti) {
                 outputDone = false;
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+            } else if (trk.hasNext) {
+              media_force_gapless:
+                AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+                AMediaExtractor_delete(extractor); close(fd);
+                fd = open(trk.nextPath, O_RDONLY);
+                if (fd < 0) { trk.hasNext = 0; break; }
+                extractor = AMediaExtractor_new();
+                off64_t fileLen = lseek64(fd, 0, SEEK_END);
+                lseek64(fd, 0, SEEK_SET);
+                if (AMediaExtractor_setDataSourceFd(extractor, fd, 0, fileLen) != AMEDIA_OK) {
+                    AMediaExtractor_delete(extractor); close(fd); trk.hasNext = 0; break;
+                }
+                int32_t aT = -1; sr = 0; ch = 0; int64_t durUs = 0;
+                for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
+                    AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
+                    const char *m = NULL;
+                    AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+                    if (m && strncmp(m, "audio/", 6) == 0) {
+                        aT = i;
+                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
+                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+                        AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durUs);
+                        AMediaFormat_delete(fmt); break;
+                    }
+                    AMediaFormat_delete(fmt);
+                }
+                if (aT < 0) { AMediaExtractor_delete(extractor); close(fd); trk.hasNext = 0; break; }
+                AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, aT);
+                const char *mime = NULL;
+                AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
+                AMediaExtractor_selectTrack(extractor, aT);
+                codec = AMediaCodec_createDecoderByType(mime);
+                if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
+                    AMediaCodec_start(codec) != AMEDIA_OK) {
+                    if (codec) AMediaCodec_delete(codec);
+                    AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor); close(fd);
+                    trk.hasNext = 0; break;
+                }
+                AMediaFormat_delete(trackFmt);
+                trk.sampleRate = sr; trk.channels = ch;
+                trk.totalFrames = (durUs > 0 && sr > 0) ? (durUs * sr / 1000000) : 0;
+                trk.writtenFrames = 0;
+                outCh = ch; threshold = RingBuffer::pacingThreshold(ch);
+                inputDone = false; outputDone = false;
+                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                trk.gapLessVersion++;
+                trk.hasNext = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+                LOGI("Media thread[%d]: gapless -> %s", ti, trk.path);
+                continue;
             } else break;
         }
 
@@ -394,6 +608,10 @@ void mediaPlaybackThread(int ti) {
                     if (trk.pcmRingBuf) {
                         trk.pcmRingBuf->push(fb, frames, outCh);
                     }
+                    if (frames > 0) {
+                        trk.lastFrame[0] = fb[(frames - 1) * outCh];
+                        if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
+                    }
                     delete[] fb;
                     trk.writtenFrames += frames;
                 }
@@ -413,10 +631,22 @@ void mediaPlaybackThread(int ti) {
         }
     }
 
-    // Drain ring buffer
-    if (outputDone && trk.ringBuf) {
-        while (trk.running && trk.ringBuf->available(outCh) > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Fade-out: write FADE_FRAMES ramping from last sample to silence
+    if (trk.ringBuf && trk.writtenFrames > 0) {
+        float fadeBuf[FADE_FRAMES * outCh];
+        for (int i = 0; i < FADE_FRAMES; i++) {
+            float g = 1.0f - (float)i / FADE_FRAMES;
+            for (int c = 0; c < outCh; c++)
+                fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+        }
+        trk.ringBuf->push(fadeBuf, FADE_FRAMES, outCh);
+    }
+
+    // Drain ring buffer so fade-out / last data is consumed before cleanup
+    if (trk.ringBuf) {
+        int to = 100;
+        while (trk.ringBuf->available(outCh) > 0 && to-- > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);
@@ -510,6 +740,11 @@ void mediaStreamPlaybackThread(int ti) {
             outputDone = false;
             trk.writtenFrames = seek;
             if (trk.ringBuf) trk.ringBuf->reset();
+            // If seek reaches/passes end and next track is queued, force gapless
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop && trk.totalFrames > 0) {
+                LOGI("Media stream[%d]: seek-to-end -> forcing gapless transition", ti);
+                goto stream_force_gapless;
+            }
         }
 
         // Loop: seek back to beginning when track completes
@@ -521,6 +756,53 @@ void mediaStreamPlaybackThread(int ti) {
                 outputDone = false;
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+            } else if (trk.hasNext) {
+              stream_force_gapless:
+                AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+                AMediaExtractor_delete(extractor);
+                extractor = AMediaExtractor_new();
+                media_status_t setSt = AMediaExtractor_setDataSource(extractor, trk.nextPath);
+                if (setSt != AMEDIA_OK) {
+                    AMediaExtractor_delete(extractor); trk.hasNext = 0; break;
+                }
+                int32_t aT = -1; sr = 0; ch = 0; int64_t durUs = 0;
+                for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
+                    AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
+                    const char *m = NULL;
+                    AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+                    if (m && strncmp(m, "audio/", 6) == 0) {
+                        aT = i;
+                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
+                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+                        AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durUs);
+                        AMediaFormat_delete(fmt); break;
+                    }
+                    AMediaFormat_delete(fmt);
+                }
+                if (aT < 0) { AMediaExtractor_delete(extractor); trk.hasNext = 0; break; }
+                AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, aT);
+                const char *mime = NULL;
+                AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
+                AMediaExtractor_selectTrack(extractor, aT);
+                codec = AMediaCodec_createDecoderByType(mime);
+                if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
+                    AMediaCodec_start(codec) != AMEDIA_OK) {
+                    if (codec) AMediaCodec_delete(codec);
+                    AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor);
+                    trk.hasNext = 0; break;
+                }
+                AMediaFormat_delete(trackFmt);
+                trk.sampleRate = sr; trk.channels = ch;
+                trk.totalFrames = (durUs > 0 && sr > 0) ? (durUs * sr / 1000000) : 0;
+                trk.writtenFrames = 0;
+                outCh = ch; threshold = RingBuffer::pacingThreshold(ch);
+                inputDone = false; outputDone = false;
+                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                trk.gapLessVersion++;
+                trk.hasNext = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+                LOGI("Media stream[%d]: gapless -> %s", ti, trk.path);
+                continue;
             } else break;
         }
 
@@ -583,6 +865,10 @@ void mediaStreamPlaybackThread(int ti) {
                     if (trk.pcmRingBuf) {
                         trk.pcmRingBuf->push(fb, frames, outCh);
                     }
+                    if (frames > 0) {
+                        trk.lastFrame[0] = fb[(frames - 1) * outCh];
+                        if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
+                    }
                     delete[] fb;
                 }
             }
@@ -601,9 +887,22 @@ void mediaStreamPlaybackThread(int ti) {
         }
     }
 
-    if (outputDone && trk.ringBuf) {
-        while (trk.running && trk.ringBuf->available(outCh) > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Fade-out: write FADE_FRAMES ramping from last sample to silence
+    if (trk.ringBuf && trk.writtenFrames > 0) {
+        float fadeBuf[FADE_FRAMES * outCh];
+        for (int i = 0; i < FADE_FRAMES; i++) {
+            float g = 1.0f - (float)i / FADE_FRAMES;
+            for (int c = 0; c < outCh; c++)
+                fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+        }
+        trk.ringBuf->push(fadeBuf, FADE_FRAMES, outCh);
+    }
+
+    // Drain ring buffer so fade-out / last data is consumed before cleanup
+    if (trk.ringBuf) {
+        int to = 100;
+        while (trk.ringBuf->available(outCh) > 0 && to-- > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);

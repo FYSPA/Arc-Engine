@@ -11,6 +11,8 @@
 
 #include "common.h"
 
+void ensureFxChain(float sampleRate, int channels);
+
 extern "C" {
 EXPORT int32_t track_play(int32_t index, const char* path);
 EXPORT int32_t play_audio(const char* path);
