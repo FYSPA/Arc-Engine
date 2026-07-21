@@ -81,6 +81,7 @@ abstract class FfiInterface {
   void trackSetNext(int index, Pointer<Utf8> path);
   void trackClearNext(int index);
   void mixerSetMasterVolume(double vol);
+  void engineSetCrossfadeFrames(int frames);
 
   int getPcmAvailable();
   int readPcmSamples(Pointer<Float> buffer, int maxFrames);
@@ -94,6 +95,7 @@ abstract class FfiInterface {
   int fxSetEnabled(Pointer<Utf8> name, int enabled);
 
   int trackGetGapLessVersion(int index);
+  int trackGetGapLessAbort(int index);
 
   // ─── Compressor ──────────────────────────────────────────────────────
   void compressorSetThreshold(double db);
@@ -283,6 +285,13 @@ final class FfiBindings implements FfiInterface {
       _lib.lookupFunction<Void Function(Float), void Function(double)>(
           'mixer_set_master_volume');
 
+  @override
+  void engineSetCrossfadeFrames(int frames) =>
+      _engineSetCrossfadeFrames(frames);
+  late final _engineSetCrossfadeFrames =
+      _lib.lookupFunction<Void Function(Int32), void Function(int)>(
+          'engine_set_crossfade_frames');
+
   // ─── PCM Stream ─────────────────────────────────────────────────────
   @override
   int getPcmAvailable() => _getPcmAvailable();
@@ -353,6 +362,12 @@ final class FfiBindings implements FfiInterface {
   late final _trackGetGapLessVersion =
       _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
           'track_get_gap_less_version');
+
+  @override
+  int trackGetGapLessAbort(int index) => _trackGetGapLessAbort(index);
+  late final _trackGetGapLessAbort =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_gap_less_abort');
 
   // ─── Compressor ──────────────────────────────────────────────────────
   @override

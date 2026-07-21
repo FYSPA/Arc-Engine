@@ -64,6 +64,7 @@ void wavPlaybackThread(int ti) {
     }
 
     trk.running = 1;
+    trk.fadeLen = gCtl.crossfadeFrames;
     int32_t blockSize = 4096;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
@@ -95,19 +96,39 @@ void wavPlaybackThread(int ti) {
             } else if (trk.hasNext) {
                 LOGI("WAV thread[%d]: gapless: loading %s (wf=%lld total=%lld)",
                      ti, trk.nextPath, (long long)trk.writtenFrames.load(), (long long)total);
+                { int32_t tmpSR = 0, tmpCh = 0;
+                  if (getWavFormat(trk.nextPath, tmpSR, tmpCh) != 0 ||
+                      tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                      LOGI("WAV thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
+                           ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
+                      trk.gapLessVersion++;
+                      trk.gapLessAbort = 1;
+                      trk.hasNext = 0;
+                      break;
+                  }
+                }
+                writeGaplessFadeOut(trk, ch);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 int32_t res = loadWavIntoState(trk, trk.nextPath);
                 if (res == 0) {
-                    LOGI("WAV thread[%d]: gapless: load OK -> %s", ti, trk.nextPath);
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
                     trk.hasNext = 0;
+                    if (!_hp) {
+                        trk.crossfading = 1;
+                        trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                        trk.fadeLen = gCtl.crossfadeFrames;
+                    }
                 } else {
                     LOGI("WAV thread[%d]: gapless: load failed %d", ti, res);
-                    // loadWavIntoState may have deleted old wavData even on error,
-                    // so refresh all locals to avoid dangling pointers
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
                     trk.hasNext = 0;
+                    if (!_hp) {
+                        trk.crossfading = 0;
+                        trk.crossfadeRemaining = 0;
+                    }
+                }
                 }
                 // Refresh local variables — loadWavIntoState replaced everything
                 data = trk.wavData;
@@ -117,6 +138,8 @@ void wavPlaybackThread(int ti) {
                 ch = trk.channels;
                 bps = trk.bitsPerSample;
                 total = trk.totalFrames;
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
                 LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
                 continue;
             } else break;
@@ -135,15 +158,37 @@ void wavPlaybackThread(int ti) {
             // If seek reached or passed the end, trigger gapless immediately
             if (total - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
                 LOGI("WAV thread[%d]: seek-to-end -> forcing gapless transition", ti);
+                { int32_t tmpSR = 0, tmpCh = 0;
+                  if (getWavFormat(trk.nextPath, tmpSR, tmpCh) != 0 ||
+                      tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                      LOGI("WAV thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
+                           ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
+                      trk.gapLessVersion++;
+                      trk.gapLessAbort = 1;
+                      trk.hasNext = 0;
+                      break;
+                  }
+                }
+                writeGaplessFadeOut(trk, ch);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 int32_t res = loadWavIntoState(trk, trk.nextPath);
                 if (res == 0) {
-                    LOGI("WAV thread[%d]: seek-gapless: load OK -> %s", ti, trk.nextPath);
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
+                    if (!_hp) {
+                        trk.crossfading = 1;
+                        trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                        trk.fadeLen = gCtl.crossfadeFrames;
+                    }
                 } else {
                     LOGI("WAV thread[%d]: seek-gapless: load failed %d", ti, res);
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
+                    if (!_hp) {
+                        trk.crossfading = 0;
+                        trk.crossfadeRemaining = 0;
+                    }
+                }
                 }
                 trk.hasNext = 0;
                 data = trk.wavData;
@@ -153,6 +198,8 @@ void wavPlaybackThread(int ti) {
                 ch = trk.channels;
                 bps = trk.bitsPerSample;
                 total = trk.totalFrames;
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
                 LOGI("WAV thread[%d]: seek-gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
             }
         }
@@ -182,6 +229,8 @@ void wavPlaybackThread(int ti) {
         }
 
         if (trk.ringBuf) {
+            updateFadeHistory(trk, floatBuf, chunk, ch);
+            applyFadeIn(trk, floatBuf, chunk, ch);
             int32_t pushed = trk.ringBuf->push(floatBuf, chunk, ch);
             trk.writtenFrames += pushed;
             if (pushed > 0) {
@@ -259,6 +308,7 @@ void flacPlaybackThread(int ti) {
     }
 
     trk.running = 1;
+    trk.fadeLen = gCtl.crossfadeFrames;
     ps.stream = gCtl.stream;
 
     int32_t ch = ps.info.channels;
@@ -279,6 +329,16 @@ void flacPlaybackThread(int ti) {
                 if (trk.ringBuf) trk.ringBuf->reset();
             } else if (trk.hasNext) {
               flac_gapless:
+                if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
+                    LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
+                         ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
+                    trk.gapLessVersion++;
+                    trk.gapLessAbort = 1;
+                    trk.hasNext = 0;
+                    break;
+                }
+                writeGaplessFadeOut(trk, ch);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = FLAC__stream_decoder_new();
@@ -287,12 +347,13 @@ void flacPlaybackThread(int ti) {
                 st = FLAC__stream_decoder_init_file(
                     decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
                 if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-                    FLAC__stream_decoder_delete(decoder);
+                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
                     trk.hasNext = 0;
                     break;
                 }
                 FLAC__stream_decoder_process_until_end_of_metadata(decoder);
                 if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
                     trk.hasNext = 0;
                     break;
                 }
@@ -305,9 +366,19 @@ void flacPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 ch = ps.info.channels;
                 threshold = RingBuffer::pacingThreshold(ch);
-                if (trk.ringBuf) trk.ringBuf->reset();
+                if (_hp && _pf > 0) {
+                    FLAC__stream_decoder_seek_absolute(decoder, _pf);
+                    trk.writtenFrames = _pf;
+                }
+                if (!_hp) {
+                    trk.crossfading = 1;
+                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                    trk.fadeLen = gCtl.crossfadeFrames;
+                }
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
                 LOGI("FLAC thread[%d]: gapless -> %s", ti, trk.path);
-                continue;
+                continue; }
             } else break;
         }
 
@@ -324,29 +395,55 @@ void flacPlaybackThread(int ti) {
             // If seek reaches/passes end and next track is queued, trigger gapless immediately
             if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
                 LOGI("FLAC thread[%d]: seek-to-end -> forcing gapless transition", ti);
+                if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
+                    LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
+                         ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
+                    trk.gapLessVersion++;
+                    trk.gapLessAbort = 1;
+                    trk.hasNext = 0;
+                    break;
+                }
+                writeGaplessFadeOut(trk, ch);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = FLAC__stream_decoder_new();
-                if (decoder) {
-                    FLAC__stream_decoder_set_metadata_respond_all(decoder);
-                    st = FLAC__stream_decoder_init_file(
-                        decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
-                    if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-                        FLAC__stream_decoder_process_until_end_of_metadata(decoder);
-                        if (ps.info.sampleRate > 0 && ps.info.channels > 0) {
-                            strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                            trk.gapLessVersion++;
-                            trk.hasNext = 0;
-                            trk.sampleRate = ps.info.sampleRate;
-                            trk.channels = ps.info.channels;
-                            trk.totalFrames = ps.info.totalSamples;
-                            trk.writtenFrames = 0;
-                            ch = ps.info.channels;
-                            threshold = RingBuffer::pacingThreshold(ch);
-                            if (trk.ringBuf) trk.ringBuf->reset();
-                            LOGI("FLAC thread[%d]: seek-gapless -> %s", ti, trk.path);
-                        }
-                    }
+                if (!decoder) break;
+                FLAC__stream_decoder_set_metadata_respond_all(decoder);
+                st = FLAC__stream_decoder_init_file(
+                    decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+                if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                    trk.hasNext = 0;
+                    break;
+                }
+                FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+                if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                    trk.hasNext = 0;
+                    break;
+                }
+                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                trk.gapLessVersion++;
+                trk.hasNext = 0;
+                trk.sampleRate = ps.info.sampleRate;
+                trk.channels = ps.info.channels;
+                trk.totalFrames = ps.info.totalSamples;
+                trk.writtenFrames = 0;
+                ch = ps.info.channels;
+                threshold = RingBuffer::pacingThreshold(ch);
+                if (_hp && _pf > 0) {
+                    FLAC__stream_decoder_seek_absolute(decoder, _pf);
+                    trk.writtenFrames = _pf;
+                }
+                if (!_hp) {
+                    trk.crossfading = 1;
+                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                    trk.fadeLen = gCtl.crossfadeFrames;
+                }
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
+                LOGI("FLAC thread[%d]: seek-gapless -> %s", ti, trk.path);
                 }
             }
         }
@@ -393,7 +490,7 @@ void flacPlaybackThread(int ti) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    FLAC__stream_decoder_finish(decoder);
+    if (decoder) FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
     trk.running = false;
     LOGI("FLAC thread[%d]: finished", ti);
@@ -467,6 +564,7 @@ void mediaPlaybackThread(int ti) {
     }
 
     trk.running = 1;
+    trk.fadeLen = gCtl.crossfadeFrames;
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -502,6 +600,52 @@ void mediaPlaybackThread(int ti) {
                 if (trk.ringBuf) trk.ringBuf->reset();
             } else if (trk.hasNext) {
               media_force_gapless:
+                // Pre-check: validate new file format before destroying old resources
+                {
+                    int tmpFd = open(trk.nextPath, O_RDONLY);
+                    if (tmpFd < 0) {
+                        LOGI("Media thread[%d]: gapless: cannot open %s", ti, trk.nextPath);
+                        trk.hasNext = 0;
+                        trk.nextPath[0] = '\0';
+                        break;
+                    }
+                    AMediaExtractor *tmpExt = AMediaExtractor_new();
+                    off64_t tmpLen = lseek64(tmpFd, 0, SEEK_END);
+                    lseek64(tmpFd, 0, SEEK_SET);
+                    if (AMediaExtractor_setDataSourceFd(tmpExt, tmpFd, 0, tmpLen) != AMEDIA_OK) {
+                        LOGI("Media thread[%d]: gapless: setDataSource failed for %s", ti, trk.nextPath);
+                        AMediaExtractor_delete(tmpExt); close(tmpFd);
+                        trk.hasNext = 0;
+                        trk.nextPath[0] = '\0';
+                        break;
+                    }
+                    int32_t tmpSR = 0, tmpCh = 0;
+                    bool found = false;
+                    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(tmpExt); i++) {
+                        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(tmpExt, i);
+                        const char *m = NULL;
+                        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+                        if (m && strncmp(m, "audio/", 6) == 0) {
+                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &tmpSR);
+                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &tmpCh);
+                            AMediaFormat_delete(fmt);
+                            found = true;
+                            break;
+                        }
+                        AMediaFormat_delete(fmt);
+                    }
+                    AMediaExtractor_delete(tmpExt); close(tmpFd);
+                    if (!found || tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                        LOGI("Media thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
+                             ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
+                        trk.gapLessVersion++;
+                        trk.gapLessAbort = 1;
+                        trk.hasNext = 0;
+                        break;
+                    }
+                }
+                writeGaplessFadeOut(trk, outCh);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 AMediaCodec_stop(codec); AMediaCodec_delete(codec);
                 AMediaExtractor_delete(extractor); close(fd);
                 fd = open(trk.nextPath, O_RDONLY);
@@ -547,9 +691,15 @@ void mediaPlaybackThread(int ti) {
                 strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                 trk.gapLessVersion++;
                 trk.hasNext = 0;
-                if (trk.ringBuf) trk.ringBuf->reset();
+                if (!_hp) {
+                    trk.crossfading = 1;
+                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                    trk.fadeLen = gCtl.crossfadeFrames;
+                }
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
                 LOGI("Media thread[%d]: gapless -> %s", ti, trk.path);
-                continue;
+                continue; }
             } else break;
         }
 
@@ -603,6 +753,8 @@ void mediaPlaybackThread(int ti) {
                         fb[i] = vs / 32768.0f;
                     }
                     if (trk.ringBuf) {
+                        updateFadeHistory(trk, fb, frames, outCh);
+                        applyFadeIn(trk, fb, frames, outCh);
                         trk.ringBuf->push(fb, frames, outCh);
                     }
                     if (trk.pcmRingBuf) {
@@ -721,6 +873,7 @@ void mediaStreamPlaybackThread(int ti) {
     }
 
     trk.running = 1;
+    trk.fadeLen = gCtl.crossfadeFrames;
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -758,6 +911,44 @@ void mediaStreamPlaybackThread(int ti) {
                 if (trk.ringBuf) trk.ringBuf->reset();
             } else if (trk.hasNext) {
               stream_force_gapless:
+                // Pre-check: validate new file format before destroying old resources
+                {
+                    AMediaExtractor *tmpExt = AMediaExtractor_new();
+                    media_status_t tmpSt = AMediaExtractor_setDataSource(tmpExt, trk.nextPath);
+                    if (tmpSt != AMEDIA_OK) {
+                        LOGI("Media stream[%d]: gapless: setDataSource failed for %s", ti, trk.nextPath);
+                        AMediaExtractor_delete(tmpExt);
+                        trk.hasNext = 0;
+                        trk.nextPath[0] = '\0';
+                        break;
+                    }
+                    int32_t tmpSR = 0, tmpCh = 0;
+                    bool found = false;
+                    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(tmpExt); i++) {
+                        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(tmpExt, i);
+                        const char *m = NULL;
+                        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+                        if (m && strncmp(m, "audio/", 6) == 0) {
+                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &tmpSR);
+                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &tmpCh);
+                            AMediaFormat_delete(fmt);
+                            found = true;
+                            break;
+                        }
+                        AMediaFormat_delete(fmt);
+                    }
+                    AMediaExtractor_delete(tmpExt);
+                    if (!found || tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                        LOGI("Media stream[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
+                             ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
+                        trk.gapLessVersion++;
+                        trk.gapLessAbort = 1;
+                        trk.hasNext = 0;
+                        break;
+                    }
+                }
+                writeGaplessFadeOut(trk, outCh);
+                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
                 AMediaCodec_stop(codec); AMediaCodec_delete(codec);
                 AMediaExtractor_delete(extractor);
                 extractor = AMediaExtractor_new();
@@ -800,9 +991,15 @@ void mediaStreamPlaybackThread(int ti) {
                 strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                 trk.gapLessVersion++;
                 trk.hasNext = 0;
-                if (trk.ringBuf) trk.ringBuf->reset();
+                if (!_hp) {
+                    trk.crossfading = 1;
+                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
+                    trk.fadeLen = gCtl.crossfadeFrames;
+                }
+                trk.fadeHistPos = 0;
+                trk.fadeHistCount = 0;
                 LOGI("Media stream[%d]: gapless -> %s", ti, trk.path);
-                continue;
+                continue; }
             } else break;
         }
 
@@ -860,6 +1057,8 @@ void mediaStreamPlaybackThread(int ti) {
                         fb[i] = vs / 32768.0f;
                     }
                     if (trk.ringBuf) {
+                        updateFadeHistory(trk, fb, frames, outCh);
+                        applyFadeIn(trk, fb, frames, outCh);
                         trk.ringBuf->push(fb, frames, outCh);
                     }
                     if (trk.pcmRingBuf) {

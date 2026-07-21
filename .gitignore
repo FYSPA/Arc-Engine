@@ -1,6 +1,7 @@
 # Project planning (internal, not for public repo)
 ROADMAP.md
-
+issues.md
+plan_phase_fadeout.md
 # ─── Flutter / Dart ──────────────────────────────────────────
 .dart_tool/
 .packages

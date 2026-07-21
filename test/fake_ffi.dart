@@ -119,6 +119,9 @@ class FakeFfi implements FfiInterface {
   }
 
   @override
+  void engineSetCrossfadeFrames(int frames) {}
+
+  @override
   int getFlacInfo(Pointer<Utf8> path, Pointer<FlacInfo> info) => -1;
 
   @override
@@ -202,6 +205,9 @@ class FakeFfi implements FfiInterface {
 
   @override
   int trackGetGapLessVersion(int index) => 0;
+
+  @override
+  int trackGetGapLessAbort(int index) => 0;
 
   @override
   void compressorSetThreshold(double db) {}

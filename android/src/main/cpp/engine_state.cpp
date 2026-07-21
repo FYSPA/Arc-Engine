@@ -24,6 +24,7 @@ void resetCtl() {
     gCtl.outChannels = 0;
     gCtl.dsp = nullptr;
     gCtl.masterVolume = 1.0f;
+    gCtl.crossfadeFrames = CROSSFADE_FRAMES;
     gCtl.callbackCount = 0;
     gCtl.callbackFramesTotal = 0;
 }
@@ -69,6 +70,14 @@ void stopTrack(int index) {
     trk.loop = 0;
     trk.hasNext = 0;
     trk.nextPath[0] = '\0';
+    trk.crossfading = 0;
+    trk.crossfadeRemaining = 0;
+    trk.fadeHistPos = 0;
+    trk.fadeHistCount = 0;
+    trk.fadeLen = CROSSFADE_FRAMES;
+    if (trk.preBuf) { delete[] trk.preBuf; trk.preBuf = nullptr; }
+    trk.preBufReady = 0;
+    trk.preBufFrames = 0;
 
     LOGI("stopTrack[%d]: done", index);
 }
@@ -115,4 +124,24 @@ void stopEngine() {
     cleanupEngine();
     resetCtl();
     LOGI("stopEngine: done");
+}
+
+bool pushPreBuf(TrackState &trk, int32_t &outPreFrames) {
+    outPreFrames = 0;
+    if (!trk.preBufReady || trk.preBufFrames <= 0) return false;
+    outPreFrames = trk.preBufFrames;
+    trk.crossfading = 1;
+    trk.crossfadeRemaining = gCtl.crossfadeFrames;
+    trk.fadeLen = gCtl.crossfadeFrames;
+    applyFadeIn(trk, trk.preBuf, outPreFrames, trk.preBufChannels);
+    trk.ringBuf->push(trk.preBuf, outPreFrames, trk.preBufChannels);
+    if (trk.pcmRingBuf) {
+        trk.pcmRingBuf->push(trk.preBuf, outPreFrames, trk.preBufChannels);
+    }
+    LOGI("  gapless zero-gap: %d frames from preBuf (%d ch)", outPreFrames, trk.preBufChannels);
+    delete[] trk.preBuf;
+    trk.preBuf = nullptr;
+    trk.preBufReady = 0;
+    trk.preBufFrames = 0;
+    return true;
 }

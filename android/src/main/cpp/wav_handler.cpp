@@ -15,6 +15,33 @@
 #include <cstring>
 #include <aaudio/AAudio.h>
 
+int32_t getWavFormat(const char *path, int32_t &outSampleRate, int32_t &outChannels) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    uint8_t riff[12];
+    if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) {
+        fclose(f); return -2;
+    }
+
+    uint8_t chunk[8];
+    while (fread(chunk, 1, 8, f) == 8) {
+        uint32_t cs = readInt32LE(chunk + 4);
+        if (memcmp(chunk, "fmt ", 4) == 0) {
+            uint8_t fmt[16];
+            if (cs < 16 || fread(fmt, 1, 16, f) != 16) { fclose(f); return -3; }
+            if ((fmt[0] | (fmt[1] << 8)) != 1) { fclose(f); return -4; }
+            outChannels = fmt[2] | (fmt[3] << 8);
+            outSampleRate = readInt32LE(fmt + 4);
+            fclose(f);
+            return 0;
+        }
+        fseek(f, cs, SEEK_CUR);
+    }
+    fclose(f);
+    return -5;
+}
+
 int32_t loadWavIntoState(TrackState &trk, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;

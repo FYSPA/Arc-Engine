@@ -37,6 +37,10 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     const FLAC__StreamDecoder*, const FLAC__Frame *frame,
     const FLAC__int32 * const buffer[], void *client_data);
 
+// Check if FLAC file matches expected sample rate and channels.
+// Uses a temporary decoder that is fully cleaned up. Does not modify any state.
+bool checkFlacFormatMatch(const char *path, int32_t expectedSampleRate, int32_t expectedChannels);
+
 extern "C" {
 EXPORT int32_t get_flac_info(const char* path, FlacInfo* outInfo);
 EXPORT int32_t play_flac(const char* path);

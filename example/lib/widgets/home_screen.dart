@@ -47,17 +47,25 @@ class _TrackUiState {
   StreamSubscription<List<double>>? _waveformSub;
 
   StreamSubscription<String>? _nameSub;
+  StreamSubscription<String>? _abortSub;
 
   _TrackUiState(this.player, this.label);
 
   int get index => player.index;
 
-  void startNameListener({VoidCallback? onNameChanged}) {
+  void startNameListener(
+      {VoidCallback? onNameChanged,
+      void Function(String abortedName)? onAborted}) {
     _nameSub?.cancel();
     _nameSub = player.onNameChanged.listen((newName) {
       debugPrint('startNameListener[${player.index}]: "$label" -> "$newName"');
       label = newName;
       onNameChanged?.call();
+    });
+    _abortSub?.cancel();
+    _abortSub = player.onGaplessAborted.listen((abortedName) {
+      debugPrint('startNameListener[${player.index}]: ABORTED "$abortedName"');
+      onAborted?.call(abortedName);
     });
   }
 
@@ -81,6 +89,8 @@ class _TrackUiState {
     _waveformSub = null;
     _nameSub?.cancel();
     _nameSub = null;
+    _abortSub?.cancel();
+    _abortSub = null;
     waveformSamples.clear();
     player.stopPcmStream();
   }
@@ -266,7 +276,10 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         // Start name listener for gap-less tracking (re-subscribes if reused)
         final wt = _tracks.firstWhere((t) => t.index == idx);
-        wt.startNameListener(onNameChanged: () => _reQueueNext(idx));
+        wt.startNameListener(
+          onNameChanged: () => _reQueueNext(idx),
+          onAborted: (abortedName) => _onGaplessAborted(idx, abortedName),
+        );
         // Start waveform stream for this track
         wt.startWaveformStream(() {
           if (mounted) setState(() {});
@@ -275,6 +288,30 @@ class _HomeScreenState extends State<HomeScreen> {
         _status = '$label: start error $result';
       }
     });
+  }
+
+  void _onGaplessAborted(int trackIndex, String abortedName) {
+    // Find the aborted track's full path in the library
+    final match = _audioFiles.where((e) => _fileName(e.path) == abortedName);
+    if (match.isEmpty) {
+      debugPrint('_onGaplessAborted: "$abortedName" not found in library');
+      setState(
+          () => _status = 'Gapless aborted: $abortedName (not in library)');
+      return;
+    }
+    final abortedPath = match.first.path;
+    debugPrint('_onGaplessAborted[$trackIndex]: playing "$abortedName" fresh');
+    setState(() => _status = 'Gapless aborted → playing $abortedName fresh');
+    // Play the aborted track fresh on the same slot (new AAudio stream)
+    _startPlayback(abortedPath, abortedName, trackIndex: trackIndex);
+    // Re-queue the next file after this one
+    final curIdx = _audioFiles.indexWhere((e) => e.path == abortedPath);
+    if (curIdx >= 0 && curIdx + 1 < _audioFiles.length) {
+      final nextPath = _audioFiles[curIdx + 1].path;
+      final nextName = _fileName(nextPath);
+      AudioEngine.instance.tracks[trackIndex]
+          .setNextTrack(nextPath, name: nextName);
+    }
   }
 
   void _assignToTrack(String path, String label) {
@@ -1646,6 +1683,53 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text('Crossfade',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.5))),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: SizedBox(
+                    height: 22,
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 2,
+                        thumbShape:
+                            const RoundSliderThumbShape(enabledThumbRadius: 5),
+                        overlayShape:
+                            const RoundSliderOverlayShape(overlayRadius: 8),
+                      ),
+                      child: Slider(
+                        value: AudioEngine.crossfadeMs,
+                        min: 0.0,
+                        max: 170.0,
+                        divisions: 170,
+                        onChanged: (v) =>
+                            setState(() => AudioEngine.crossfadeMs = v),
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 36,
+                  child: Text(
+                    AudioEngine.crossfadeMs == 0
+                        ? 'Off'
+                        : '${AudioEngine.crossfadeMs.toStringAsFixed(0)}ms',
+                    style: TextStyle(
+                      fontSize: 9,
+                      color: Colors.white.withValues(alpha: 0.4),
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 6),

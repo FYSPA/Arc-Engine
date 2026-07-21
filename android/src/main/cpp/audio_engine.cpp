@@ -18,8 +18,10 @@
 #include "compressor.h"
 #include "reverb.h"
 #include "aaudio_utils.h"
+#include "flac_handler.h"
 
 #include <cmath>
+#include <cstring>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
 // Sums all active tracks into a single output buffer with volume/pan per track.
@@ -99,6 +101,75 @@ aaudio_data_callback_result_t aaudioDataCallback(
     gCtl.callbackFramesTotal.fetch_add(maxFrames, std::memory_order_relaxed);
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
+// ─── FLAC pre-decode for zero-gap crossfade ────────────────────────────────
+
+struct PreDecodeCtx {
+    float *buf;
+    int32_t maxFrames;
+    int32_t channels;
+    int32_t totalFrames;
+};
+
+static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
+    const FLAC__StreamDecoder *, const FLAC__Frame *frame,
+    const FLAC__int32 *const buffer[], void *clientData)
+{
+    auto *ctx = (PreDecodeCtx*)clientData;
+    int32_t frames = frame->header.blocksize;
+    int32_t ch = frame->header.channels;
+    int32_t maxFrames = ctx->maxFrames;
+    int32_t avail = maxFrames - ctx->totalFrames;
+    if (avail <= 0) return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+    if (frames > avail) frames = avail;
+    ctx->channels = ch;
+    int32_t bps = frame->header.bits_per_sample;
+    float scale = 1.0f / (float)(1 << (bps - 1));
+    for (int32_t i = 0; i < frames; i++) {
+        for (int32_t c = 0; c < ch && c < 2; c++) {
+            float s = buffer[c][i] * scale;
+            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
+            ctx->buf[(ctx->totalFrames + i) * 2 + c] = s;
+        }
+        if (ch == 1) {
+            ctx->buf[(ctx->totalFrames + i) * 2 + 1] = ctx->buf[(ctx->totalFrames + i) * 2];
+        }
+    }
+    ctx->totalFrames += frames;
+    return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+static void predecodeFlac(TrackState &trk, const char *path) {
+    FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
+    if (!decoder) return;
+    auto *ctx = new PreDecodeCtx();
+    ctx->buf = new float[MAX_PREDECODE_FRAMES * 2];
+    ctx->maxFrames = MAX_PREDECODE_FRAMES;
+    ctx->channels = 0;
+    ctx->totalFrames = 0;
+    FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
+        decoder, path, predecodeWriteCb, nullptr, nullptr, ctx);
+    if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+        while (ctx->totalFrames < MAX_PREDECODE_FRAMES) {
+            if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM)
+                break;
+            FLAC__stream_decoder_process_single(decoder);
+        }
+    }
+    FLAC__stream_decoder_finish(decoder);
+    FLAC__stream_decoder_delete(decoder);
+    if (ctx->totalFrames > 0) {
+        trk.preBuf = ctx->buf;
+        trk.preBufFrames = ctx->totalFrames;
+        trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
+        trk.preBufReady = 1;
+        LOGI("  predecode FLAC: %d frames, %d ch", ctx->totalFrames, trk.preBufChannels);
+    } else {
+        delete[] ctx->buf;
+    }
+    delete ctx;
 }
 
 extern "C" {
@@ -184,6 +255,11 @@ EXPORT int32_t track_read_pcm_samples(int32_t index, float *out, int32_t maxFram
 EXPORT int32_t track_get_gap_less_version(int32_t index) {
     if (index < 0 || index >= MAX_TRACKS) return 0;
     return gCtl.tracks[index].gapLessVersion;
+}
+
+EXPORT int32_t track_get_gap_less_abort(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].gapLessAbort.exchange(0);
 }
 
 // ─── Multi-track controls ─────────────────────────────────────────────────
@@ -274,9 +350,18 @@ EXPORT void track_set_loop(int32_t index, int32_t loop) {
 EXPORT void track_set_next(int32_t index, const char *path) {
     if (index < 0 || index >= MAX_TRACKS) return;
     if (!path || !path[0]) return;
-    strncpy(gCtl.tracks[index].nextPath, path, sizeof(gCtl.tracks[index].nextPath) - 1);
-    gCtl.tracks[index].hasNext = 1;
+    TrackState &trk = gCtl.tracks[index];
+    strncpy(trk.nextPath, path, sizeof(trk.nextPath) - 1);
+    trk.hasNext = 1;
     LOGI("track_set_next[%d]: %s", index, path);
+    // Pre-decode first frames for zero-gap crossfade (FLAC only)
+    if (trk.preBuf) { delete[] trk.preBuf; trk.preBuf = nullptr; }
+    trk.preBufReady = 0;
+    trk.preBufFrames = 0;
+    const char *ext = strrchr(path, '.');
+    if (ext && (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".FLAC") == 0) && gCtl.outChannels >= 2) {
+        predecodeFlac(trk, path);
+    }
 }
 
 EXPORT void track_clear_next(int32_t index) {
@@ -287,6 +372,10 @@ EXPORT void track_clear_next(int32_t index) {
 
 EXPORT void mixer_set_master_volume(float vol) {
     gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
+}
+
+EXPORT void engine_set_crossfade_frames(int32_t frames) {
+    gCtl.crossfadeFrames = frames < 0 ? 0 : (frames > MAX_CROSSFADE_FRAMES ? MAX_CROSSFADE_FRAMES : frames);
 }
 
 // ─── EQ control exports ─────────────────────────────────────────────────────

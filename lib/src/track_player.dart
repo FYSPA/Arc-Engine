@@ -58,10 +58,19 @@ class TrackPlayer {
       StreamController<Duration>.broadcast();
   final StreamController<String> _nameCtrl =
       StreamController<String>.broadcast();
+  final StreamController<String> _abortCtrl =
+      StreamController<String>.broadcast();
 
   Stream<PlaybackState> get onStateChanged => _stateCtrl.stream;
   Stream<Duration> get onPositionChanged => _posCtrl.stream;
   Stream<String> get onNameChanged => _nameCtrl.stream;
+
+  /// Emits the name of the next track that failed to transition via gapless.
+  ///
+  /// Fired when the native engine aborts a gapless transition (e.g. format
+  /// mismatch between current and next track). The [String] value is the
+  /// filename of the track that was queued but could not play.
+  Stream<String> get onGaplessAborted => _abortCtrl.stream;
 
   TrackPlayer(this.index);
 
@@ -243,6 +252,7 @@ class TrackPlayer {
     stop();
     _stateCtrl.close();
     _posCtrl.close();
+    _abortCtrl.close();
   }
 
   void _startPolling() {
@@ -253,11 +263,18 @@ class TrackPlayer {
       // Detect gap-less transition
       final curVersion = _ffi.trackGetGapLessVersion(index);
       if (curVersion != _lastGapLessVersion) {
+        final oldVersion = _lastGapLessVersion;
+        _lastGapLessVersion = curVersion;
         // ignore: avoid_print
         print(
-            'TP[$index]: gapLess $_lastGapLessVersion->$curVersion nextName="$_nextName"');
-        if (_nextName.isNotEmpty) {
-          _lastGapLessVersion = curVersion;
+            'TP[$index]: gapLess $oldVersion->$curVersion nextName="$_nextName"');
+        if (_ffi.trackGetGapLessAbort(index) != 0) {
+          // Gapless transition was aborted (e.g. format mismatch)
+          if (_nextName.isNotEmpty) {
+            _abortCtrl.add(_nextName);
+          }
+          _nextName = '';
+        } else if (_nextName.isNotEmpty) {
           _currentName = _nextName;
           _nextName = '';
           _nameCtrl.add(_currentName);

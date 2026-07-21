@@ -82,6 +82,8 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             floatBuf[i * channels + ch] = buffer[ch][i] * scale;
 
     if (trk.ringBuf) {
+        updateFadeHistory(trk, floatBuf, frames, channels);
+        applyFadeIn(trk, floatBuf, frames, channels);
         trk.ringBuf->push(floatBuf, frames, channels);
         trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
         if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
@@ -93,6 +95,32 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     trk.writtenFrames += frames;
 
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+// ─── checkFlacFormatMatch ─────────────────────────────────────────────────────
+
+bool checkFlacFormatMatch(const char *path, int32_t expectedSampleRate, int32_t expectedChannels) {
+    FlacInfo info;
+    memset(&info, 0, sizeof(info));
+
+    FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
+    if (!decoder) return false;
+
+    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+
+    FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
+        decoder, path, infoWriteCallback, metadataCallback, errorCallback, &info);
+
+    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_delete(decoder);
+        return false;
+    }
+
+    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+    FLAC__stream_decoder_finish(decoder);
+    FLAC__stream_decoder_delete(decoder);
+
+    return info.sampleRate == expectedSampleRate && info.channels == expectedChannels;
 }
 
 // ─── get_flac_info ───────────────────────────────────────────────────────────
