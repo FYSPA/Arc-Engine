@@ -64,7 +64,7 @@ void wavPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen = gCtl.crossfadeFrames;
+    trk.fadeLen.store(gCtl.crossfadeFrames.load());
     int32_t blockSize = 4096;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
@@ -107,28 +107,19 @@ void wavPlaybackThread(int ti) {
                       break;
                   }
                 }
-                writeGaplessFadeOut(trk, ch);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                int32_t _preFrames = writeGaplessCrossfade(trk, ch);
                 int32_t res = loadWavIntoState(trk, trk.nextPath);
                 if (res == 0) {
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
                     trk.hasNext = 0;
-                    if (!_hp) {
-                        trk.crossfading = 1;
-                        trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                        trk.fadeLen = gCtl.crossfadeFrames;
-                    }
                 } else {
                     LOGI("WAV thread[%d]: gapless: load failed %d", ti, res);
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
                     trk.hasNext = 0;
-                    if (!_hp) {
-                        trk.crossfading = 0;
-                        trk.crossfadeRemaining = 0;
-                    }
-                }
+                    trk.crossfading = 0;
+                    trk.crossfadeRemaining = 0;
                 }
                 // Refresh local variables — loadWavIntoState replaced everything
                 data = trk.wavData;
@@ -140,6 +131,7 @@ void wavPlaybackThread(int ti) {
                 total = trk.totalFrames;
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
                 continue;
             } else break;
@@ -169,26 +161,17 @@ void wavPlaybackThread(int ti) {
                       break;
                   }
                 }
-                writeGaplessFadeOut(trk, ch);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                int32_t _preFrames = writeGaplessCrossfade(trk, ch);
                 int32_t res = loadWavIntoState(trk, trk.nextPath);
                 if (res == 0) {
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
-                    if (!_hp) {
-                        trk.crossfading = 1;
-                        trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                        trk.fadeLen = gCtl.crossfadeFrames;
-                    }
                 } else {
                     LOGI("WAV thread[%d]: seek-gapless: load failed %d", ti, res);
                     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                     trk.gapLessVersion++;
-                    if (!_hp) {
-                        trk.crossfading = 0;
-                        trk.crossfadeRemaining = 0;
-                    }
-                }
+                    trk.crossfading = 0;
+                    trk.crossfadeRemaining = 0;
                 }
                 trk.hasNext = 0;
                 data = trk.wavData;
@@ -200,11 +183,12 @@ void wavPlaybackThread(int ti) {
                 total = trk.totalFrames;
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("WAV thread[%d]: seek-gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
             }
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold) {
+        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -308,7 +292,7 @@ void flacPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen = gCtl.crossfadeFrames;
+    trk.fadeLen.store(gCtl.crossfadeFrames.load());
     ps.stream = gCtl.stream;
 
     int32_t ch = ps.info.channels;
@@ -337,8 +321,11 @@ void flacPlaybackThread(int ti) {
                     trk.hasNext = 0;
                     break;
                 }
-                writeGaplessFadeOut(trk, ch);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                // Pre-decode just-in-time (gCtl.outChannels guaranteed here in decoder thread)
+                if (!trk.preBufReady && gCtl.outChannels >= 2) {
+                    predecodeFlac(trk, trk.nextPath);
+                }
+                { int32_t _preFrames = writeGaplessCrossfade(trk, ch);
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = FLAC__stream_decoder_new();
@@ -366,17 +353,13 @@ void flacPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 ch = ps.info.channels;
                 threshold = RingBuffer::pacingThreshold(ch);
-                if (_hp && _pf > 0) {
-                    FLAC__stream_decoder_seek_absolute(decoder, _pf);
-                    trk.writtenFrames = _pf;
-                }
-                if (!_hp) {
-                    trk.crossfading = 1;
-                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                    trk.fadeLen = gCtl.crossfadeFrames;
+                if (_preFrames > 0) {
+                    FLAC__stream_decoder_seek_absolute(decoder, _preFrames);
+                    trk.writtenFrames = _preFrames;
                 }
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("FLAC thread[%d]: gapless -> %s", ti, trk.path);
                 continue; }
             } else break;
@@ -403,8 +386,10 @@ void flacPlaybackThread(int ti) {
                     trk.hasNext = 0;
                     break;
                 }
-                writeGaplessFadeOut(trk, ch);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                if (!trk.preBufReady && gCtl.outChannels >= 2) {
+                    predecodeFlac(trk, trk.nextPath);
+                }
+                int32_t _preFrames = writeGaplessCrossfade(trk, ch);
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = FLAC__stream_decoder_new();
@@ -432,19 +417,14 @@ void flacPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 ch = ps.info.channels;
                 threshold = RingBuffer::pacingThreshold(ch);
-                if (_hp && _pf > 0) {
-                    FLAC__stream_decoder_seek_absolute(decoder, _pf);
-                    trk.writtenFrames = _pf;
-                }
-                if (!_hp) {
-                    trk.crossfading = 1;
-                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                    trk.fadeLen = gCtl.crossfadeFrames;
+                if (_preFrames > 0) {
+                    FLAC__stream_decoder_seek_absolute(decoder, _preFrames);
+                    trk.writtenFrames = _preFrames;
                 }
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("FLAC thread[%d]: seek-gapless -> %s", ti, trk.path);
-                }
             }
         }
 
@@ -453,7 +433,7 @@ void flacPlaybackThread(int ti) {
             continue;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold) {
+        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -564,7 +544,7 @@ void mediaPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen = gCtl.crossfadeFrames;
+    trk.fadeLen.store(gCtl.crossfadeFrames.load());
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -644,8 +624,7 @@ void mediaPlaybackThread(int ti) {
                         break;
                     }
                 }
-                writeGaplessFadeOut(trk, outCh);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                { int32_t _preFrames = writeGaplessCrossfade(trk, outCh);
                 AMediaCodec_stop(codec); AMediaCodec_delete(codec);
                 AMediaExtractor_delete(extractor); close(fd);
                 fd = open(trk.nextPath, O_RDONLY);
@@ -691,19 +670,15 @@ void mediaPlaybackThread(int ti) {
                 strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                 trk.gapLessVersion++;
                 trk.hasNext = 0;
-                if (!_hp) {
-                    trk.crossfading = 1;
-                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                    trk.fadeLen = gCtl.crossfadeFrames;
-                }
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("Media thread[%d]: gapless -> %s", ti, trk.path);
                 continue; }
             } else break;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -873,7 +848,7 @@ void mediaStreamPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen = gCtl.crossfadeFrames;
+    trk.fadeLen.store(gCtl.crossfadeFrames.load());
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -947,8 +922,7 @@ void mediaStreamPlaybackThread(int ti) {
                         break;
                     }
                 }
-                writeGaplessFadeOut(trk, outCh);
-                { int32_t _pf = 0; bool _hp = pushPreBuf(trk, _pf);
+                { int32_t _preFrames = writeGaplessCrossfade(trk, outCh);
                 AMediaCodec_stop(codec); AMediaCodec_delete(codec);
                 AMediaExtractor_delete(extractor);
                 extractor = AMediaExtractor_new();
@@ -991,19 +965,15 @@ void mediaStreamPlaybackThread(int ti) {
                 strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
                 trk.gapLessVersion++;
                 trk.hasNext = 0;
-                if (!_hp) {
-                    trk.crossfading = 1;
-                    trk.crossfadeRemaining = gCtl.crossfadeFrames;
-                    trk.fadeLen = gCtl.crossfadeFrames;
-                }
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
+                trk.skipPacing = 0;
                 LOGI("Media stream[%d]: gapless -> %s", ti, trk.path);
                 continue; }
             } else break;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused) {
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }

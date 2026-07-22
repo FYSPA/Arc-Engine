@@ -112,6 +112,9 @@ struct PreDecodeCtx {
     int32_t totalFrames;
 };
 
+static void predecodeMetadataCb(
+    const FLAC__StreamDecoder*, const FLAC__StreamMetadata*, void*) {}
+
 static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
     const FLAC__StreamDecoder *, const FLAC__Frame *frame,
     const FLAC__int32 *const buffer[], void *clientData)
@@ -140,23 +143,31 @@ static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
-static void predecodeFlac(TrackState &trk, const char *path) {
+void predecodeFlac(TrackState &trk, const char *path) {
     FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
-    if (!decoder) return;
+    if (!decoder) { LOGE("  predecode FLAC: decoder_new failed"); return; }
     auto *ctx = new PreDecodeCtx();
     ctx->buf = new float[MAX_PREDECODE_FRAMES * 2];
     ctx->maxFrames = MAX_PREDECODE_FRAMES;
     ctx->channels = 0;
     ctx->totalFrames = 0;
     FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
-        decoder, path, predecodeWriteCb, nullptr, nullptr, ctx);
+        decoder, path, predecodeWriteCb, predecodeMetadataCb, errorCallback, ctx);
     if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
         FLAC__stream_decoder_process_until_end_of_metadata(decoder);
         while (ctx->totalFrames < MAX_PREDECODE_FRAMES) {
-            if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM)
+            FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
+            if (ds == FLAC__STREAM_DECODER_END_OF_STREAM)
                 break;
+            if (ds == FLAC__STREAM_DECODER_ABORTED) {
+                LOGE("  predecode FLAC: decoder aborted after %d frames", ctx->totalFrames);
+                break;
+            }
             FLAC__stream_decoder_process_single(decoder);
         }
+        LOGI("  predecode FLAC: %d frames decoded", ctx->totalFrames);
+    } else {
+        LOGE("  predecode FLAC: init_file failed: %d", st);
     }
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
@@ -165,8 +176,9 @@ static void predecodeFlac(TrackState &trk, const char *path) {
         trk.preBufFrames = ctx->totalFrames;
         trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
         trk.preBufReady = 1;
-        LOGI("  predecode FLAC: %d frames, %d ch", ctx->totalFrames, trk.preBufChannels);
+        LOGI("  predecode FLAC: %d frames ready, %d ch", ctx->totalFrames, trk.preBufChannels);
     } else {
+        LOGI("  predecode FLAC: zero frames decoded — not using preBuf");
         delete[] ctx->buf;
     }
     delete ctx;
@@ -359,8 +371,12 @@ EXPORT void track_set_next(int32_t index, const char *path) {
     trk.preBufReady = 0;
     trk.preBufFrames = 0;
     const char *ext = strrchr(path, '.');
-    if (ext && (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".FLAC") == 0) && gCtl.outChannels >= 2) {
-        predecodeFlac(trk, path);
+    if (ext && (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".FLAC") == 0)) {
+        if (gCtl.outChannels >= 2) {
+            predecodeFlac(trk, path);
+        } else {
+            LOGI("track_set_next[%d]: skipping predecode (outChannels=%d)", index, gCtl.outChannels);
+        }
     }
 }
 
@@ -375,7 +391,8 @@ EXPORT void mixer_set_master_volume(float vol) {
 }
 
 EXPORT void engine_set_crossfade_frames(int32_t frames) {
-    gCtl.crossfadeFrames = frames < 0 ? 0 : (frames > MAX_CROSSFADE_FRAMES ? MAX_CROSSFADE_FRAMES : frames);
+    int32_t v = frames < 0 ? 0 : (frames > MAX_CROSSFADE_FRAMES ? MAX_CROSSFADE_FRAMES : frames);
+    gCtl.crossfadeFrames.store(v, std::memory_order_release);
 }
 
 // ─── EQ control exports ─────────────────────────────────────────────────────

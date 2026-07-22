@@ -35,6 +35,7 @@ class AudioEngine {
           List.generate(4, (i) => TrackPlayer(i)),
         ) {
     _initAudioFocus();
+    FfiInterface.instance.engineSetCrossfadeFrames((_crossfadeMs * 48).round());
   }
 
   void _initAudioFocus() {
@@ -112,11 +113,11 @@ class AudioEngine {
   }
 
   /// Crossfade duration in milliseconds between gapless tracks.
-  /// 0 = off, max ~170ms (limited by MAX_CROSSFADE_FRAMES at 48kHz).
+  /// 0 = off, max ~500ms (limited by MAX_CROSSFADE_FRAMES at 48kHz).
   static double get crossfadeMs => _crossfadeMs;
-  static double _crossfadeMs = 10.0;
+  static double _crossfadeMs = 80.0;
   static set crossfadeMs(double v) {
-    _crossfadeMs = v.clamp(0.0, 170.0);
+    _crossfadeMs = v.clamp(0.0, 500.0);
     FfiInterface.instance.engineSetCrossfadeFrames((_crossfadeMs * 48).round());
   }
 

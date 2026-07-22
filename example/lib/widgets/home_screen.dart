@@ -1709,8 +1709,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Slider(
                         value: AudioEngine.crossfadeMs,
                         min: 0.0,
-                        max: 170.0,
-                        divisions: 170,
+                        max: 500.0,
+                        divisions: 500,
                         onChanged: (v) =>
                             setState(() => AudioEngine.crossfadeMs = v),
                       ),

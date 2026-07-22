@@ -41,6 +41,11 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
 // Uses a temporary decoder that is fully cleaned up. Does not modify any state.
 bool checkFlacFormatMatch(const char *path, int32_t expectedSampleRate, int32_t expectedChannels);
 
+struct TrackState;
+// Pre-decode first MAX_PREDECODE_FRAMES frames of a FLAC file into trk.preBuf.
+// Creates a temporary decoder that is fully cleaned up.
+void predecodeFlac(TrackState &trk, const char *path);
+
 extern "C" {
 EXPORT int32_t get_flac_info(const char* path, FlacInfo* outInfo);
 EXPORT int32_t play_flac(const char* path);

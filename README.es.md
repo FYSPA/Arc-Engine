@@ -1,9 +1,6 @@
 <div align="center">
   <br>
-  <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/flutter/flutter.png" alt="Flutter" width="80" />
-  <img src="https://raw.githubusercontent.com/github/explore/80688e429a7d4ef2fca1e82350fe8e3517d3494d/topics/android/android.png" alt="Android" width="80" />
-  <br>
-  <br>
+    <img src="assets/Logo.png" alt="Arc Engine Logo" width="300" />
   <h1>Arc Audio Engine (AAE)</h1>
   <p>
     <strong>Plugin nativo de Flutter para reproducción multi-formato en Android</strong>
