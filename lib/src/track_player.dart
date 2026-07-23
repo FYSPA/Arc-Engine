@@ -265,9 +265,6 @@ class TrackPlayer {
       if (curVersion != _lastGapLessVersion) {
         final oldVersion = _lastGapLessVersion;
         _lastGapLessVersion = curVersion;
-        // ignore: avoid_print
-        print(
-            'TP[$index]: gapLess $oldVersion->$curVersion nextName="$_nextName"');
         if (_ffi.trackGetGapLessAbort(index) != 0) {
           // Gapless transition was aborted (e.g. format mismatch)
           if (_nextName.isNotEmpty) {

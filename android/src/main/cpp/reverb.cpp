@@ -140,8 +140,8 @@ void Reverb::recalc() {
 void Reverb::process(float *samples, int32_t numFrames, int32_t channels) {
     if (!enabled_ || numFrames <= 0 || channels <= 0) return;
 
-    // 1. Sum to mono
-    float *mono = new float[numFrames];
+    // 1. Sum to mono (stack-allocated, numFrames is always ≤192 from AAudio callback)
+    float mono[numFrames];
     for (int32_t f = 0; f < numFrames; f++) {
         float sum = 0.0f;
         int base = f * channels;
@@ -178,6 +178,4 @@ void Reverb::process(float *samples, int32_t numFrames, int32_t channels) {
             samples[base + c] = samples[base + c] * dryGain + wet * wetGain;
         }
     }
-
-    delete[] mono;
 }

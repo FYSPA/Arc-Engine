@@ -119,6 +119,12 @@ static void cleanupEngine() {
         delete gCtl.limiter;
         gCtl.limiter = nullptr;
     }
+
+    // Delete shared effect chain
+    if (gCtl.fxChain) {
+        delete gCtl.fxChain;
+        gCtl.fxChain = nullptr;
+    }
 }
 
 void stopEngine() {
