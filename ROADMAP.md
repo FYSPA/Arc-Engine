@@ -23,6 +23,7 @@
 | **11** | **API Dart completa** — TrackPlayer (streams estado/posición), AudioEngine singleton, backward compat |
 | **12** | **Pruebas / Benchmarks** — 30 tests Dart, 22 tests C++, benchmarks RingBuffer y DSP |
 | **10.1** | **Guard contra archivos eliminados** — try-catch + existsSync() para evitar pantalla roja |
+| **P1.3b** | **Crossfade entre tracks** — Fundido cruzado durante transición gapless con early trigger, silence scan en fadeHistory y preBuf |
 
 ### P0 — Alta prioridad
 | # | Área | Mejora | Archivos clave |
@@ -64,7 +65,6 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P1.3b | **Mixer** | Crossfade entre tracks | Fundido cruzado durante transición gapless (actualmente hay fade-out en stop pero no crossfade entre canciones) |
 | P1.4 | **UI** | Drag & drop reorder | 🚫 Saltado — no se implementará |
 
 ### P2 — Baja prioridad
@@ -77,6 +77,7 @@
 | P2.4c | **DSP** | Chorus | Efecto de chorus |
 | P2.5 | **DSP** | Sidechain | Compresión sidechain para ducking automático entre pistas |
 | P2.6 | **Grabación** | Entrada de micrófono | Pista en vivo desde el micrófono, mezclada con pistas locales |
+| P2.7 | **Mixer** | Silence threshold refinado | Subir threshold de 1e-3 a 5e-2 para que preBufStart apunte directamente a audio real (actualmente sin(0) compensa el ruido residual, pero mayor precisión mejora diagnósticos) |
 
 ---
 
