@@ -64,7 +64,7 @@ struct TrackState {
     int fadeHistCount{0};
     std::atomic<int> crossfading{0};
     std::atomic<int> crossfadeRemaining{0};
-    std::atomic<int> fadeLen{CROSSFADE_FRAMES};
+    std::atomic<int> fadeLen{0};  // set by crossfadeMsToFrames() before use
 
     // Pre-decoded buffer for zero-gap gapless transitions (FLAC only)
     float *preBuf{nullptr};
@@ -124,7 +124,7 @@ struct EngineState {
     TrackState tracks[MAX_TRACKS];
 
     float masterVolume{1.0f};
-    std::atomic<int32_t> crossfadeFrames{CROSSFADE_FRAMES};
+    std::atomic<int32_t> crossfadeMs{80};  // default 80ms, converted to frames by crossfadeMsToFrames()
 
     // Debug counters (shared across all tracks)
     std::atomic<int32_t> callbackCount{0};
@@ -132,6 +132,13 @@ struct EngineState {
 };
 
 extern EngineState gCtl;
+
+// Convert crossfade milliseconds to frames using the current sample rate.
+inline int32_t crossfadeMsToFrames(int32_t ms) {
+    if (ms <= 0 || gCtl.sampleRate <= 0) return 0;
+    return std::min((int32_t)((int64_t)ms * gCtl.sampleRate / 1000),
+                    (int32_t)MAX_CROSSFADE_FRAMES);
+}
 
 void resetCtl();
 void stopEngine();

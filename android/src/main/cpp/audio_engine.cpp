@@ -98,6 +98,23 @@ aaudio_data_callback_result_t aaudioDataCallback(
         gCtl.limiter->process(out, maxFrames, ch);
     }
 
+    // Diagnostic: log ONCE when crossfading to verify callback sees it
+    {
+        static int lastLoggedVersion = -1;
+        for (int t = 0; t < MAX_TRACKS; t++) {
+            TrackState &trk = gCtl.tracks[t];
+            if (trk.running && trk.crossfading.load()) {
+                int ver = trk.gapLessVersion;
+                if (ver != lastLoggedVersion) {
+                    lastLoggedVersion = ver;
+                    LOGI("  callback DIAG: track[%d] crossfading remaining=%d fadeLen=%d version=%d",
+                         t, trk.crossfadeRemaining.load(), trk.fadeLen.load(), ver);
+                }
+                break;
+            }
+        }
+    }
+
     gCtl.callbackFramesTotal.fetch_add(maxFrames, std::memory_order_relaxed);
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
@@ -390,9 +407,10 @@ EXPORT void mixer_set_master_volume(float vol) {
     gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
 }
 
-EXPORT void engine_set_crossfade_frames(int32_t frames) {
-    int32_t v = frames < 0 ? 0 : (frames > MAX_CROSSFADE_FRAMES ? MAX_CROSSFADE_FRAMES : frames);
-    gCtl.crossfadeFrames.store(v, std::memory_order_release);
+EXPORT void engine_set_crossfade_ms(int32_t ms) {
+    int32_t v = ms < 0 ? 0 : (ms > 500 ? 500 : ms);
+    gCtl.crossfadeMs.store(v, std::memory_order_release);
+    LOGI("engine_set_crossfade_ms: %d ms", v);
 }
 
 // ─── EQ control exports ─────────────────────────────────────────────────────

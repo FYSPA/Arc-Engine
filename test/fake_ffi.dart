@@ -119,7 +119,7 @@ class FakeFfi implements FfiInterface {
   }
 
   @override
-  void engineSetCrossfadeFrames(int frames) {}
+  void engineSetCrossfadeMs(int ms) {}
 
   @override
   int getFlacInfo(Pointer<Utf8> path, Pointer<FlacInfo> info) => -1;

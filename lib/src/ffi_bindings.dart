@@ -81,7 +81,7 @@ abstract class FfiInterface {
   void trackSetNext(int index, Pointer<Utf8> path);
   void trackClearNext(int index);
   void mixerSetMasterVolume(double vol);
-  void engineSetCrossfadeFrames(int frames);
+  void engineSetCrossfadeMs(int ms);
 
   int getPcmAvailable();
   int readPcmSamples(Pointer<Float> buffer, int maxFrames);
@@ -286,11 +286,10 @@ final class FfiBindings implements FfiInterface {
           'mixer_set_master_volume');
 
   @override
-  void engineSetCrossfadeFrames(int frames) =>
-      _engineSetCrossfadeFrames(frames);
-  late final _engineSetCrossfadeFrames =
+  void engineSetCrossfadeMs(int ms) => _engineSetCrossfadeMs(ms);
+  late final _engineSetCrossfadeMs =
       _lib.lookupFunction<Void Function(Int32), void Function(int)>(
-          'engine_set_crossfade_frames');
+          'engine_set_crossfade_ms');
 
   // ─── PCM Stream ─────────────────────────────────────────────────────
   @override

@@ -64,7 +64,7 @@ void wavPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen.store(gCtl.crossfadeFrames.load());
+    trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
     int32_t blockSize = 4096;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
@@ -188,7 +188,8 @@ void wavPlaybackThread(int ti) {
             }
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold && !trk.skipPacing) {
+        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -292,7 +293,7 @@ void flacPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen.store(gCtl.crossfadeFrames.load());
+    trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
     ps.stream = gCtl.stream;
 
     int32_t ch = ps.info.channels;
@@ -301,6 +302,25 @@ void flacPlaybackThread(int ti) {
     uint64_t _stopFlac = 0;
     while (read(trk.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
         _stopFlac = 0;
+
+        // ─── Early crossfade trigger ───
+        // Start crossfade before track ends to avoid trailing silence.
+        // Triggers when remaining frames <= fadeLen + 96000 (~2.18s buffer).
+        // 96000 ensures fadeHistory contains real audio before silence fills it.
+        if (!trk.loop && trk.hasNext && !trk.crossfading.load()
+            && ps.info.totalSamples > 0) {
+            int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
+            int64_t remaining = ps.info.totalSamples - trk.writtenFrames;
+            if (remaining > 0 && remaining <= fadeLen + 96000) {
+                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)+96000  wf=%lld total=%lld",
+                     ti, (long long)remaining, fadeLen,
+                     (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples);
+                if (!trk.preBufReady && gCtl.outChannels >= 2) {
+                    predecodeFlac(trk, trk.nextPath);
+                }
+                goto flac_gapless;
+            }
+        }
 
         // Loop: seek back to beginning when track completes
         if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples) {
@@ -433,7 +453,8 @@ void flacPlaybackThread(int ti) {
             continue;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(ch) > threshold && !trk.skipPacing) {
+        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -544,7 +565,7 @@ void mediaPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen.store(gCtl.crossfadeFrames.load());
+    trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -678,7 +699,8 @@ void mediaPlaybackThread(int ti) {
             } else break;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused && !trk.skipPacing) {
+        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > effThreshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
@@ -848,7 +870,7 @@ void mediaStreamPlaybackThread(int ti) {
     }
 
     trk.running = 1;
-    trk.fadeLen.store(gCtl.crossfadeFrames.load());
+    trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
 
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
@@ -973,7 +995,8 @@ void mediaStreamPlaybackThread(int ti) {
             } else break;
         }
 
-        if (trk.ringBuf && trk.ringBuf->available(outCh) > threshold && !trk.paused && !trk.skipPacing) {
+        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        if (trk.ringBuf && trk.ringBuf->available(outCh) > effThreshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }

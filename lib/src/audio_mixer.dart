@@ -35,7 +35,7 @@ class AudioEngine {
           List.generate(4, (i) => TrackPlayer(i)),
         ) {
     _initAudioFocus();
-    FfiInterface.instance.engineSetCrossfadeFrames((_crossfadeMs * 48).round());
+    FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
   }
 
   void _initAudioFocus() {
@@ -118,7 +118,7 @@ class AudioEngine {
   static double _crossfadeMs = 80.0;
   static set crossfadeMs(double v) {
     _crossfadeMs = v.clamp(0.0, 500.0);
-    FfiInterface.instance.engineSetCrossfadeFrames((_crossfadeMs * 48).round());
+    FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
   }
 
   Stream<List<double>> startPcmStream({
