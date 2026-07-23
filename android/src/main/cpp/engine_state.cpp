@@ -162,7 +162,7 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
             int32_t n = (histCount < space) ? histCount : (space > 0 ? space : 0);
             if (n > 0) {
                 // Scan backwards to skip trailing silence in old track
-                float silenceThresh = 1e-4f;
+                float silenceThresh = 1e-3f;
                 int32_t startIdx = (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
                 for (int32_t s = 0; s < histCount; s++) {
                     int checkIdx = (trk.fadeHistPos - 2 - s + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
@@ -200,7 +200,7 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
 
     // Scan backwards through fadeHistory to skip trailing silence in old track.
     // This avoids a volume dip when the old track ends with digital silence.
-    float silenceThresh = 1e-4f;
+    float silenceThresh = 1e-3f;
     int32_t newestIdx = (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
     bool audioFound = false;
     int32_t scannedSilent = 0;
