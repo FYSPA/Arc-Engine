@@ -192,19 +192,7 @@ extern "C" {
 
 EXPORT void stop_audio() {
     stopTrack(0);
-    // Check if all tracks stopped, then close stream
-    bool anyRunning = false;
-    for (int i = 0; i < MAX_TRACKS; i++)
-        if (gCtl.tracks[i].running) { anyRunning = true; break; }
-    if (!anyRunning && gCtl.stream) {
-        closeAAudioStream(gCtl.stream);
-        gCtl.stream = nullptr;
-        if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
-        if (gCtl.fxChain) { delete gCtl.fxChain; gCtl.fxChain = nullptr; }
-        if (gCtl.limiter) { delete gCtl.limiter; gCtl.limiter = nullptr; }
-        gCtl.sampleRate = 0;
-        gCtl.outChannels = 0;
-    }
+    cleanupEngine();
 }
 
 EXPORT void pause_audio() {
@@ -280,19 +268,7 @@ EXPORT int32_t track_get_gap_less_abort(int32_t index) {
 
 EXPORT void track_stop(int32_t index) {
     stopTrack(index);
-    // Close shared stream if no tracks remain
-    bool anyRunning = false;
-    for (int i = 0; i < MAX_TRACKS; i++)
-        if (gCtl.tracks[i].running) { anyRunning = true; break; }
-    if (!anyRunning && gCtl.stream) {
-        closeAAudioStream(gCtl.stream);
-        gCtl.stream = nullptr;
-        if (gCtl.dsp) { delete gCtl.dsp; gCtl.dsp = nullptr; }
-        if (gCtl.fxChain) { delete gCtl.fxChain; gCtl.fxChain = nullptr; }
-        if (gCtl.limiter) { delete gCtl.limiter; gCtl.limiter = nullptr; }
-        gCtl.sampleRate = 0;
-        gCtl.outChannels = 0;
-    }
+    cleanupEngine();
 }
 
 EXPORT void track_pause(int32_t index) {

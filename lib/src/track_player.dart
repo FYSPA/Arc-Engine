@@ -252,6 +252,7 @@ class TrackPlayer {
     stop();
     _stateCtrl.close();
     _posCtrl.close();
+    _nameCtrl.close();
     _abortCtrl.close();
   }
 

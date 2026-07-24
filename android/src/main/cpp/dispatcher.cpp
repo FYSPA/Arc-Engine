@@ -75,39 +75,8 @@ int32_t track_play(int32_t index, const char* path) {
     LOGI("track_play[%d]: path=%s ext=%s", index, path, extLower);
 
     if (strcmp(extLower, ".wav") == 0) {
-        // Parse WAV RIFF header
-        FILE *f = fopen(path, "rb");
-        if (!f) return -1;
-        uint8_t riff[12];
-        if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) { fclose(f); return -2; }
-        int32_t bps = 0; bool fmtFound = false;
-        uint8_t chunk[8];
-        while (fread(chunk, 1, 8, f) == 8) {
-            uint32_t cs = readInt32LE(chunk + 4);
-            if (memcmp(chunk, "fmt ", 4) == 0) {
-                uint8_t fmt[16];
-                if (cs < 16 || fread(fmt, 1, 16, f) != 16) { fclose(f); return -3; }
-                if ((fmt[0]|(fmt[1]<<8)) != 1) { fclose(f); return -4; }
-                trk.channels = fmt[2]|(fmt[3]<<8);
-                trk.sampleRate = fmt[4]|(fmt[5]<<8)|(fmt[6]<<16)|(fmt[7]<<24);
-                bps = fmt[14]|(fmt[15]<<8);
-                trk.bitsPerSample = bps;
-                fmtFound = true;
-                if (cs > 16) fseek(f, cs - 16, SEEK_CUR);
-            } else if (memcmp(chunk, "data", 4) == 0) {
-                if (!fmtFound) { fclose(f); return -5; }
-                trk.wavDataSize = cs;
-                trk.wavData = new uint8_t[cs];
-                if (fread(trk.wavData, 1, cs, f) != cs) {
-                    delete[] trk.wavData; trk.wavData = nullptr; fclose(f); return -6;
-                }
-                break;
-            } else { fseek(f, cs, SEEK_CUR); }
-        }
-        fclose(f);
-        if (!trk.wavData) return -7;
-        trk.wavFrameSize = trk.channels * (bps / 8);
-        trk.totalFrames = trk.wavDataSize / trk.wavFrameSize;
+        int32_t rc = loadWavIntoState(trk, path);
+        if (rc != 0) return rc;
         trk.writtenFrames = 0;
         trk.ringBuf = new RingBuffer();
         trk.pcmRingBuf = new RingBuffer();

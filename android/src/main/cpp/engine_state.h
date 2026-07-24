@@ -140,6 +140,7 @@ inline int32_t crossfadeMsToFrames(int32_t ms) {
 }
 
 void resetCtl();
+void cleanupEngine();
 void stopEngine();
 void stopTrack(int index);
 void stopAllTracks();
