@@ -42,11 +42,11 @@ struct TrackState {
 
     int stopFd{-1};
 
-    volatile int running{0};
-    volatile int paused{0};
-    volatile int mute{0};
-    volatile int solo{0};
-    volatile int loop{0};
+    std::atomic<int> running{0};
+    std::atomic<int> paused{0};
+    std::atomic<int> mute{0};
+    std::atomic<int> solo{0};
+    std::atomic<int> loop{0};
     std::atomic<int64_t> seekToFrame{-1};
 
     float volume{1.0f};
@@ -54,8 +54,8 @@ struct TrackState {
     float lastFrame[2]{};
 
     char nextPath[512]{0};
-    volatile int hasNext{0};
-    volatile int32_t gapLessVersion{0};
+    std::atomic<int> hasNext{0};
+    std::atomic<int32_t> gapLessVersion{0};
     std::atomic<int> gapLessAbort{0};
 
     // Crossfade state for smooth gapless transitions

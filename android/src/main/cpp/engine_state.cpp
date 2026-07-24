@@ -34,7 +34,7 @@ void stopTrack(int index) {
     TrackState &trk = gCtl.tracks[index];
 
     LOGI("stopTrack[%d]: signaling stop (format=%d running=%d)",
-         index, (int)trk.format, trk.running);
+         index, (int)trk.format, (int)trk.running.load());
 
     // Signal stop via eventfd
     if (trk.stopFd >= 0) {

@@ -326,7 +326,7 @@ void flacPlaybackThread(int ti) {
         if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples) {
             LOGI("FLAC thread[%d]: natural-end detected wf=%lld total=%lld loop=%d hasNext=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                 trk.loop, trk.hasNext);
+                 trk.loop.load(), trk.hasNext.load());
             if (trk.loop) {
                 FLAC__stream_decoder_seek_absolute(decoder, 0);
                 trk.writtenFrames = 0;
@@ -389,7 +389,7 @@ void flacPlaybackThread(int ti) {
         if (seek >= 0) {
             LOGI("FLAC thread[%d]: SEEK seek=%lld totalFrames=%lld totalSamples=%lld remaining=%lld hasNext=%d loop=%d",
                  ti, (long long)seek, (long long)trk.totalFrames, (long long)ps.info.totalSamples,
-                 (long long)(trk.totalFrames - seek), trk.hasNext, trk.loop);
+                 (long long)(trk.totalFrames - seek), trk.hasNext.load(), trk.loop.load());
             if (seek < ps.info.totalSamples || ps.info.totalSamples == 0) {
                 FLAC__stream_decoder_seek_absolute(decoder, seek);
                 trk.writtenFrames = seek;
@@ -463,7 +463,7 @@ void flacPlaybackThread(int ti) {
         if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) {
             LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                 trk.hasNext, trk.loop);
+                 trk.hasNext.load(), trk.loop.load());
             if (trk.hasNext && !trk.loop) {
                 LOGI("FLAC thread[%d]: EOS -> goto flac_gapless", ti);
                 goto flac_gapless;
