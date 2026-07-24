@@ -23,17 +23,17 @@
 | **11** | **API Dart completa** — TrackPlayer (streams estado/posición), AudioEngine singleton, backward compat |
 | **12** | **Pruebas / Benchmarks** — 30 tests Dart, 22 tests C++, benchmarks RingBuffer y DSP |
 | **10.1** | **Guard contra archivos eliminados** — try-catch + existsSync() para evitar pantalla roja |
-| **P1.3b** | **Crossfade entre tracks** — Fundido cruzado durante transición gapless con early trigger, silence scan en fadeHistory y preBuf |
+| **P0.3** | **Mute / Solo por track** — Mute/solo nativos en audio callback con respeto de prioridad solo |
+| **P0.5** | **Loop por track** — Repetición infinita con re-seek automático al final de cada track |
+| **P0.6** | **Audio Focus** — Ducking, pausa por notificación, becoming-noisy handler |
+| **P0.7** | **Bluetooth auto-pause** — Pausa por desconexión de auriculares BT con reconexión AAudio |
+| **P0.4** | **Limiter post-mezcla** — Hard-clipper con threshold configurable (-60 a 0 dB), aplicado después de effects chain |
+| **P0.1** | **EQ Q ajustable por banda** — Parámetro Q configurable por banda con filtros biquad |
+| **P0.2** | **EQ tipo de filtro por banda** — Peak/LowShelf/HighShelf/LowPass/HighPass por banda |
 
 ### P0 — Alta prioridad
 | # | Área | Mejora | Archivos clave |
 |---|------|--------|----------------|
-| P0.1 | **EQ** | Q ajustable por banda | `dsp_processor.h`, `eq_dialog.dart` |
-| P0.2 | **EQ** | Tipo de filtro por banda (Peak/LS/HS/LP/HP) | `dsp_processor.h:24-28`, `eq_dialog.dart:82-89` |
-| P0.3 | **Mixer** | Mute / Solo por track | `engine_state.h:45-47`, `audio_engine.cpp:259-271`, `track_player.dart:104-119` |
-| P0.4 | **Pipeline** | Limitador post-mezcla (hard-clipper) | `limiter.cpp`, `audio_mixer.dart:391-406` |
-| P0.5 | **Mixer** | Loop por track | `engine_threads.cpp:91-93` (4 threads), `track_player.dart:117-119` |
-| P0.6 | **Android** | Audio Focus (ducking, pausa por notif) | `AudioEnginePlugin.kt`, `audio_focus.dart`, `audio_mixer.dart:25-164` |
 
 ### P1 — Media prioridad
 | # | Área | Mejora | Archivos clave |

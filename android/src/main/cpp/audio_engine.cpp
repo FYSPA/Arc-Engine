@@ -368,7 +368,7 @@ EXPORT void mixer_set_master_volume(float vol) {
 }
 
 EXPORT void engine_set_crossfade_ms(int32_t ms) {
-    int32_t v = ms < 0 ? 0 : (ms > 500 ? 500 : ms);
+    int32_t v = ms < 0 ? 0 : (ms > 1000 ? 1000 : ms);
     gCtl.crossfadeMs.store(v, std::memory_order_release);
     LOGI("engine_set_crossfade_ms: %d ms", v);
 }

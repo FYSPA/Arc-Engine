@@ -124,7 +124,7 @@ struct EngineState {
     TrackState tracks[MAX_TRACKS];
 
     float masterVolume{1.0f};
-    std::atomic<int32_t> crossfadeMs{80};  // default 80ms, converted to frames by crossfadeMsToFrames()
+    std::atomic<int32_t> crossfadeMs{500};  // default 500ms, converted to frames by crossfadeMsToFrames()
 
     // AAudio stream disconnect detection
     std::atomic<int> streamDisconnected{0};

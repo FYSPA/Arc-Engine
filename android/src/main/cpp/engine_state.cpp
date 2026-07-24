@@ -152,6 +152,8 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     if (histCount > 0) histCount--;  // exclude newest frame (already in ring buffer)
     int32_t preFrames = trk.preBufReady ? trk.preBufFrames : 0;
 
+    LOGI("  crossfade setup: fadeLen=%d histCount=%d preFrames=%d avail=%d", fadeLen, histCount, preFrames, avail);
+
     // ─── Caso 1: crossfade=0 ───
     if (fadeLen <= 0) {
         if (preFrames > 0) {
@@ -226,9 +228,9 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         }
     }
 
-//    LOGI("║ SILENCE SCAN: scanned=%d/%d audioFound=%s silentFrames=%d newestIdx=%d default=%d",
-//         histCount, histCount, audioFound ? "YES" : "NO", scannedSilent, newestIdx,
-//         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
+    LOGI("  SILENCE SCAN: histCount=%d scanned=%d/%d audioFound=%s silentFrames=%d newestIdx=%d default=%d",
+         histCount, histCount, histCount, audioFound ? "YES" : "NO", scannedSilent, newestIdx,
+         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
 
     // Scan preBuf forwards to skip leading silence in the new track.
     // This avoids mixing silence+silence when both tracks have silence at boundaries.
@@ -243,8 +245,8 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     }
     int32_t availPreBuf = preFrames - preBufStart;
     if (preBufStart > 0) {
-//        LOGI("║ PREBUF SILENCE SKIP: preBufStart=%d availPreBuf=%d/%d (skipped %d leading silent frames)",
-//             preBufStart, availPreBuf, preFrames, preBufStart);
+        LOGI("  PREBUF SILENCE SKIP: preBufStart=%d availPreBuf=%d/%d (skipped %d leading silent frames)",
+             preBufStart, availPreBuf, preFrames, preBufStart);
     }
 
     // Log fadeHistory at key positions to understand the audio profile
@@ -252,22 +254,24 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         int i1 = (idx + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
         int i2 = (idx - 1 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
         int i3 = (idx - fadeLen/2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-//        LOGI("║   %s [%d]={%.6f,%.6f} [%d]={%.6f,%.6f} [%d(mid)]={%.6f,%.6f}",
-//             label, i1, trk.fadeHistory[i1*2], trk.fadeHistory[i1*2+1],
-//             i2, trk.fadeHistory[i2*2], trk.fadeHistory[i2*2+1],
-//             i3, trk.fadeHistory[i3*2], trk.fadeHistory[i3*2+1]);
+        LOGI("  %s [%d]={%.6f,%.6f} [%d]={%.6f,%.6f} [%d(mid)]={%.6f,%.6f}",
+             label, i1, trk.fadeHistory[i1*2], trk.fadeHistory[i1*2+1],
+             i2, trk.fadeHistory[i2*2], trk.fadeHistory[i2*2+1],
+             i3, trk.fadeHistory[i3*2], trk.fadeHistory[i3*2+1]);
     };
     logFadeHist("fadeHist @newest/next/mid:", newestIdx);
 
     // Log preBuf at key positions (showing from preBufStart)
-//    LOGI("║   preBuf [%d]={%.6f,%.6f} [%d+1]={%.6f,%.6f} [%d+100]={%.6f,%.6f} [%d+mid]={%.6f,%.6f}",
-//         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
-//         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
-//         preBufStart, trk.preBuf[(preBufStart+100)*trk.preBufChannels], trk.preBuf[(preBufStart+100)*trk.preBufChannels+1],
-//         preBufStart, trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels], trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels+1]);
+    LOGI("  preBuf [%d]={%.6f,%.6f} [%d+1]={%.6f,%.6f} [%d+100]={%.6f,%.6f} [%d+mid]={%.6f,%.6f}",
+         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
+         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
+         preBufStart, trk.preBuf[(preBufStart+100)*trk.preBufChannels], trk.preBuf[(preBufStart+100)*trk.preBufChannels+1],
+         preBufStart, trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels], trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels+1]);
 
     // Calculate mixLen using availPreBuf (frames after skipping leading silence)
     int32_t mixLen = std::min({fadeLen, histCount, availPreBuf, space});
+    LOGI("  mixLen=%d (min of: fadeLen=%d histCount=%d availPreBuf=%d space=%d)",
+         mixLen, fadeLen, histCount, availPreBuf, space);
 
     if (mixLen <= 0) {
         if (availPreBuf > 0 && space > 0) {
@@ -303,50 +307,49 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
             mixBuf[i * fadeCh + c] = 0;
     }
 
-//    LOGI("║ SYNCHRONIZATION: avail=%d fadeHistPos=%d newestIdx=%d (default was %d)",
-//         avail, trk.fadeHistPos, newestIdx,
-//         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
-//
-//    LOGI("║ MIX BUFFER SAMPLES:");
-//    LOGI("║   [0] mix={%.6f,%.6f}  [1] mix={%.6f,%.6f}  [mid] mix={%.6f,%.6f}",
-//         mixBuf[0], mixBuf[1], mixBuf[2], mixBuf[3],
-//         mixBuf[(mixLen/2)*fadeCh], mixBuf[(mixLen/2)*fadeCh+1]);
-//
-//    LOGI("║ FADEHISTORY @ newestIdx[%d]: {%.6f,%.6f}  @ [%d]: {%.6f,%.6f}",
-//         newestIdx, trk.fadeHistory[(newestIdx)*2], trk.fadeHistory[(newestIdx)*2+1],
-//         (newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES,
-//         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2],
-//         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2+1]);
-//
-//    LOGI("║ PREBUFFER SAMPLES (from preBufStart=%d):", preBufStart);
-//    LOGI("║   [%d]={%.6f,%.6f}  [%d+1]={%.6f,%.6f}  [%d+mid]={%.6f,%.6f}",
-//         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
-//         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
-//         preBufStart, trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels], trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels+1]);
+    LOGI("  SYNCHRONIZATION: avail=%d fadeHistPos=%d newestIdx=%d (default was %d)",
+         avail, trk.fadeHistPos, newestIdx,
+         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
+
+    LOGI("  MIX BUFFER SAMPLES:");
+    LOGI("    [0] mix={%.6f,%.6f}  [1] mix={%.6f,%.6f}  [mid] mix={%.6f,%.6f}",
+         mixBuf[0], mixBuf[1], mixBuf[2], mixBuf[3],
+         mixBuf[(mixLen/2)*fadeCh], mixBuf[(mixLen/2)*fadeCh+1]);
+
+    LOGI("  FADEHISTORY @ newestIdx[%d]: {%.6f,%.6f}  @ [%d]: {%.6f,%.6f}",
+         newestIdx, trk.fadeHistory[(newestIdx)*2], trk.fadeHistory[(newestIdx)*2+1],
+         (newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES,
+         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2],
+         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2+1]);
+
+    LOGI("  PREBUFFER SAMPLES (from preBufStart=%d):", preBufStart);
+    LOGI("    [%d]={%.6f,%.6f}  [%d+1]={%.6f,%.6f}  [%d+mid]={%.6f,%.6f}",
+         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
+         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
+         preBufStart, trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels], trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels+1]);
 
     float gain0_old = cosf(0.0f);
     float gain0_new = sinf(0.0f);
     float gainMid_old = cosf(((float)(mixLen/2)/fadeLen)*1.57079632679f);
     float gainMid_new = sinf(((float)(mixLen/2)/fadeLen)*1.57079632679f);
 
-//    LOGI("║ GAIN CURVE (equal-power crossfade):");
-//    LOGI("║   @[0]: oldTrack=%.6f newTrack=%.6f", gain0_old, gain0_new);
-//    LOGI("║   @[mid]: oldTrack=%.6f newTrack=%.6f", gainMid_old, gainMid_new);
-//
-//    LOGI("║ RING BUFFER STATE:");
-//    LOGI("║   Before: avail=%d capacity=%d space=%d", avail, trk.ringBuf->capacity(fadeCh), space);
-//
-//    int32_t pushedMix = trk.ringBuf->push(mixBuf.data(), mixLen, fadeCh);
-//    int32_t availAfterMix = trk.ringBuf->available(fadeCh);
-//
-//    LOGI("║   After push: pushed=%d availAfter=%d (expected ~%d)",
-//         pushedMix, availAfterMix, avail + mixLen);
-//
-//    LOGI("║ SUMMARY:");
-//    LOGI("║   mixLen=%d fadeLen=%d histCount=%d preFrames=%d preBufStart=%d availPreBuf=%d ch=%d",
-//         mixLen, fadeLen, histCount, preFrames, preBufStart, availPreBuf, fadeCh);
-    LOGI("║   Result: %s",
-         (mixBuf.size() >= 2 && mixBuf[0] != 0.0f && mixBuf[1] != 0.0f) ? "✅ MIX HAS AUDIO" : "❌ MIX IS ZERO!");
+    LOGI("  GAIN CURVE (equal-power crossfade):");
+    LOGI("    @[0]: oldTrack=%.6f newTrack=%.6f", gain0_old, gain0_new);
+    LOGI("    @[mid]: oldTrack=%.6f newTrack=%.6f", gainMid_old, gainMid_new);
+
+    LOGI("  RING BUFFER STATE:");
+    LOGI("    Before: avail=%d capacity=%d space=%d", avail, trk.ringBuf->capacity(fadeCh), space);
+
+    int32_t pushedMix = trk.ringBuf->push(mixBuf.data(), mixLen, fadeCh);
+    int32_t availAfterMix = trk.ringBuf->available(fadeCh);
+
+    LOGI("    After push: pushed=%d availAfter=%d (expected ~%d)",
+         pushedMix, availAfterMix, avail + mixLen);
+
+    LOGI("  SUMMARY: mixLen=%d fadeLen=%d histCount=%d preFrames=%d preBufStart=%d availPreBuf=%d ch=%d",
+         mixLen, fadeLen, histCount, preFrames, preBufStart, availPreBuf, fadeCh);
+    LOGI("    Result: %s",
+         (mixBuf.size() >= 2 && mixBuf[0] != 0.0f && mixBuf[1] != 0.0f) ? "MIX HAS AUDIO" : "MIX IS ZERO!");
 
     int32_t remaining = availPreBuf - mixLen;
     if (remaining > 0) {

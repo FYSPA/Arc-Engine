@@ -30,5 +30,5 @@ enum class AudioFormat { NONE, FLAC, WAV, MEDIA };
 #define FADE_FRAMES 256  // ~5.3ms fade at 48kHz for click-free stop/seek
 #define SEEKGAP_THRESHOLD 8192  // ~186ms at 44100Hz — trigger gapless when seek is this close to end
 #define CROSSFADE_FRAMES 512  // default crossfade ~10.7ms at 48kHz
-#define MAX_CROSSFADE_FRAMES 24000  // max ~500ms at 48kHz
-#define MAX_PREDECODE_FRAMES 24000  // ~500ms at 48kHz — pre-decode for zero-gap crossfade
+#define MAX_CROSSFADE_FRAMES 48000  // max ~1000ms at 48kHz
+#define MAX_PREDECODE_FRAMES 48000  // ~1000ms at 48kHz — pre-decode for zero-gap crossfade
