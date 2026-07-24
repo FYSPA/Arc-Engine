@@ -19,6 +19,10 @@ enum AudioFocusEvent {
   /// Another app wants to play over us temporarily at reduced volume.
   /// Lower volume until [gain].
   duck,
+
+  /// Bluetooth headphones or wired headphones were disconnected.
+  /// Pause playback — the audio will route to the phone speaker.
+  becomingNoisy,
 }
 
 /// Platform-channel bridge to Android AudioManager for audio focus.

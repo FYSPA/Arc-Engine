@@ -18,6 +18,9 @@ AAudioStream* createAAudioStreamCallback(int32_t sampleRate, int32_t channels,
 void closeAAudioStream(AAudioStream *stream);
 int32_t writeFrames(AAudioStream *stream, const float *data, int32_t frames, int32_t channels);
 
+// AAudio error callback — logs stream errors (disconnect, etc.)
+void aaudioErrorCallback(AAudioStream *stream, void *userData, aaudio_result_t error);
+
 // AAudio data callback (defined in audio_engine.cpp)
 aaudio_data_callback_result_t aaudioDataCallback(
     AAudioStream *stream, void *userData, void *audioData, int32_t numFrames);

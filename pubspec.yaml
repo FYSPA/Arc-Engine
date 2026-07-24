@@ -26,5 +26,5 @@ flutter:
     platforms:
       android:
         ffiPlugin: true
-        # package: com.fyspa.audio_engine
-        # pluginClass: AudioEnginePlugin
+        package: com.fyspa.audio_engine
+        pluginClass: AudioEnginePlugin

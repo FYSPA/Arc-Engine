@@ -3,6 +3,8 @@ package com.fyspa.audio_engine
 import android.app.Activity
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioDeviceCallback
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Handler
@@ -23,6 +25,7 @@ class AudioEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     private var activity: Activity? = null
     private var pauseOnNotification: Boolean = true
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var deviceCallback: AudioDeviceCallback? = null
     private val focusChangeHandler = Handler(Looper.getMainLooper())
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -62,10 +65,12 @@ class AudioEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
         audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        registerDeviceCallback()
     }
 
     override fun onDetachedFromActivity() {
         abandonAudioFocus()
+        unregisterDeviceCallback()
         activity = null
         audioManager = null
     }
@@ -132,5 +137,45 @@ class AudioEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         try {
             am.abandonAudioFocusRequest(req)
         } catch (_: Exception) {}
+    }
+
+    // ─── AudioDeviceCallback: reliable BT disconnect detection ───
+    // Only fires onAudioDevicesRemoved — never on connect.
+
+    private fun registerDeviceCallback() {
+        val am = audioManager ?: return
+        deviceCallback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                for (device in removedDevices) {
+                    if (isBluetoothDevice(device.type)) {
+                        focusChangeHandler.postDelayed({
+                            eventSink?.success("becomingNoisy")
+                        }, 1500)
+                        return
+                    }
+                }
+            }
+
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                // No-op: BT connect does NOT trigger pause
+            }
+        }
+        am.registerAudioDeviceCallback(deviceCallback, focusChangeHandler)
+    }
+
+    private fun unregisterDeviceCallback() {
+        deviceCallback?.let {
+            try { audioManager?.unregisterAudioDeviceCallback(it) } catch (_: Exception) {}
+        }
+        deviceCallback = null
+    }
+
+    companion object {
+        private fun isBluetoothDevice(type: Int): Boolean {
+            return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                   type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                   type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                   type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+        }
     }
 }

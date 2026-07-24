@@ -29,10 +29,14 @@
 aaudio_data_callback_result_t aaudioDataCallback(
     AAudioStream *stream, void *userData, void *audioData, int32_t numFrames) {
 
-    gCtl.callbackCount.fetch_add(1, std::memory_order_relaxed);
-
     float *out = (float*)audioData;
     int32_t ch = gCtl.outChannels;
+
+    // If stream was disconnected, output silence while reconnecting
+    if (gCtl.streamDisconnected.load(std::memory_order_relaxed)) {
+        memset(out, 0, (size_t)numFrames * ch * sizeof(float));
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
 
     // Zero output buffer
     memset(out, 0, (size_t)numFrames * ch * sizeof(float));
@@ -97,25 +101,6 @@ aaudio_data_callback_result_t aaudioDataCallback(
     if (gCtl.limiter && maxFrames > 0) {
         gCtl.limiter->process(out, maxFrames, ch);
     }
-
-    // Diagnostic: log ONCE when crossfading to verify callback sees it
-    {
-        static int lastLoggedVersion = -1;
-        for (int t = 0; t < MAX_TRACKS; t++) {
-            TrackState &trk = gCtl.tracks[t];
-            if (trk.running && trk.crossfading.load()) {
-                int ver = trk.gapLessVersion;
-                if (ver != lastLoggedVersion) {
-                    lastLoggedVersion = ver;
-                    LOGI("  callback DIAG: track[%d] crossfading remaining=%d fadeLen=%d version=%d",
-                         t, trk.crossfadeRemaining.load(), trk.fadeLen.load(), ver);
-                }
-                break;
-            }
-        }
-    }
-
-    gCtl.callbackFramesTotal.fetch_add(maxFrames, std::memory_order_relaxed);
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }

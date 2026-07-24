@@ -27,8 +27,6 @@ void resetCtl() {
     gCtl.dsp = nullptr;
     gCtl.masterVolume = 1.0f;
     // crossfadeMs is a user preference — don't reset
-    gCtl.callbackCount = 0;
-    gCtl.callbackFramesTotal = 0;
 }
 
 void stopTrack(int index) {
@@ -299,10 +297,6 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
             mixBuf[i * fadeCh + c] = 0;
     }
 
-    LOGI("╔════════════════════════════════════════════════════════════════════════╗");
-    LOGI("║                    CROSSFADE DIAGNOSTIC START                          ║");
-    LOGI("╚════════════════════════════════════════════════════════════════════════╝");
-
     LOGI("║ SYNCHRONIZATION: avail=%d fadeHistPos=%d newestIdx=%d (default was %d)",
          avail, trk.fadeHistPos, newestIdx,
          (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
@@ -347,10 +341,6 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
          mixLen, fadeLen, histCount, preFrames, preBufStart, availPreBuf, fadeCh);
     LOGI("║   Result: %s",
          (mixBuf.size() >= 2 && mixBuf[0] != 0.0f && mixBuf[1] != 0.0f) ? "✅ MIX HAS AUDIO" : "❌ MIX IS ZERO!");
-
-    LOGI("╔════════════════════════════════════════════════════════════════════════╗");
-    LOGI("║                    CROSSFADE DIAGNOSTIC END                            ║");
-    LOGI("╚════════════════════════════════════════════════════════════════════════╝");
 
     int32_t remaining = availPreBuf - mixLen;
     if (remaining > 0) {

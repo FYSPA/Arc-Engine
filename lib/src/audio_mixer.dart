@@ -101,6 +101,16 @@ class AudioEngine {
           masterVolume = _savedMasterVolume * 0.3;
           _wasDucked = true;
         }
+
+      case AudioFocusEvent.becomingNoisy:
+        // Bluetooth/wired headphones disconnected — pause to avoid speaker blast
+        _focusPausedTracks.clear();
+        for (final track in tracks) {
+          if (track.state == PlaybackState.playing) {
+            _focusPausedTracks.add(track.index);
+            track.pause();
+          }
+        }
     }
   }
 

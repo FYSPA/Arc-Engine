@@ -126,9 +126,8 @@ struct EngineState {
     float masterVolume{1.0f};
     std::atomic<int32_t> crossfadeMs{80};  // default 80ms, converted to frames by crossfadeMsToFrames()
 
-    // Debug counters (shared across all tracks)
-    std::atomic<int32_t> callbackCount{0};
-    std::atomic<int32_t> callbackFramesTotal{0};
+    // AAudio stream disconnect detection
+    std::atomic<int> streamDisconnected{0};
 };
 
 extern EngineState gCtl;

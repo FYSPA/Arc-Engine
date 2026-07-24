@@ -9,6 +9,43 @@
 
 #include "aaudio_utils.h"
 #include "common.h"
+#include "engine_state.h"
+#include <thread>
+#include <chrono>
+
+static void reconnectStream() {
+    LOGI("AAudio reconnect: starting...");
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            LOGI("AAudio reconnect: attempt %d, waiting 500ms...", attempt + 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        closeAAudioStream(gCtl.stream);
+        gCtl.stream = nullptr;
+
+        AAudioStream *newStream = createAAudioStreamCallback(
+            gCtl.sampleRate, gCtl.outChannels,
+            aaudioDataCallback, nullptr);
+        if (newStream) {
+            gCtl.stream = newStream;
+            gCtl.streamDisconnected = 0;
+            LOGI("AAudio reconnect: SUCCESS on attempt %d", attempt + 1);
+            return;
+        }
+        LOGE("AAudio reconnect: attempt %d FAILED", attempt + 1);
+    }
+    LOGE("AAudio reconnect: all attempts failed, audio will be silent");
+    gCtl.streamDisconnected = 0;
+}
+
+void aaudioErrorCallback(AAudioStream *stream, void *userData, aaudio_result_t error) {
+    LOGE("AAudio ERROR CALLBACK: error=%d stream=%p", error, stream);
+    if (error == AAUDIO_ERROR_DISCONNECTED) {
+        LOGE("AAudio STREAM DISCONNECTED — spawning reconnect thread");
+        gCtl.streamDisconnected = 1;
+        std::thread(reconnectStream).detach();
+    }
+}
 
 AAudioStream* createAAudioStream(int32_t sampleRate, int32_t channels) {
     AAudioStreamBuilder *builder;
@@ -50,6 +87,7 @@ AAudioStream* createAAudioStreamCallback(int32_t sampleRate, int32_t channels,
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     AAudioStreamBuilder_setDataCallback(builder, callback, userData);
+    AAudioStreamBuilder_setErrorCallback(builder, aaudioErrorCallback, nullptr);
     AAudioStreamBuilder_setFramesPerDataCallback(builder, 192);
 
     AAudioStream *stream;
