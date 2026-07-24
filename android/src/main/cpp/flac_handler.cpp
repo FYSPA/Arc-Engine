@@ -116,11 +116,21 @@ bool checkFlacFormatMatch(const char *path, int32_t expectedSampleRate, int32_t 
         return false;
     }
 
-    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+    if (!FLAC__stream_decoder_process_until_end_of_metadata(decoder)) {
+        LOGE("  format check: metadata failed — file may be corrupted: %s", path);
+        FLAC__stream_decoder_finish(decoder);
+        FLAC__stream_decoder_delete(decoder);
+        return false;
+    }
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
 
-    return info.sampleRate == expectedSampleRate && info.channels == expectedChannels;
+    if (info.sampleRate != expectedSampleRate || info.channels != expectedChannels) {
+        LOGI("  format check: expected %dHz/%dch, got %dHz/%dch",
+             expectedSampleRate, expectedChannels, info.sampleRate, info.channels);
+        return false;
+    }
+    return true;
 }
 
 // ─── get_flac_info ───────────────────────────────────────────────────────────

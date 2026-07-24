@@ -156,16 +156,15 @@ void predecodeFlac(TrackState &trk, const char *path) {
     FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
         decoder, path, predecodeWriteCb, predecodeMetadataCb, errorCallback, ctx);
     if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-        FLAC__stream_decoder_process_until_end_of_metadata(decoder);
-        while (ctx->totalFrames < MAX_PREDECODE_FRAMES) {
-            FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
-            if (ds == FLAC__STREAM_DECODER_END_OF_STREAM)
-                break;
-            if (ds == FLAC__STREAM_DECODER_ABORTED) {
-                LOGE("  predecode FLAC: decoder aborted after %d frames", ctx->totalFrames);
-                break;
+        if (!FLAC__stream_decoder_process_until_end_of_metadata(decoder)) {
+            LOGE("  predecode FLAC: metadata failed — file may be corrupted: %s", path);
+        } else {
+            while (ctx->totalFrames < MAX_PREDECODE_FRAMES) {
+                FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
+                if (ds == FLAC__STREAM_DECODER_END_OF_STREAM) break;
+                if (ds == FLAC__STREAM_DECODER_ABORTED) break;
+                if (!FLAC__stream_decoder_process_single(decoder)) break;
             }
-            FLAC__stream_decoder_process_single(decoder);
         }
         LOGI("  predecode FLAC: %d frames decoded", ctx->totalFrames);
     } else {

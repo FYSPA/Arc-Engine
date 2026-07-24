@@ -315,9 +315,6 @@ void flacPlaybackThread(int ti) {
                 LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)+96000  wf=%lld total=%lld",
                      ti, (long long)remaining, fadeLen,
                      (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples);
-                if (!trk.preBufReady && gCtl.outChannels >= 2) {
-                    predecodeFlac(trk, trk.nextPath);
-                }
                 goto flac_gapless;
             }
         }
