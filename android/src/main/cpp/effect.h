@@ -7,6 +7,7 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <atomic>
 
 class AudioEffect {
 public:
@@ -28,13 +29,30 @@ protected:
 class EffectChain {
 public:
     ~EffectChain() {
+        // Free authoritative list
         for (auto *fx : effects_) delete fx;
         effects_.clear();
+        // Release snapshot reference
+        Snapshot *snap = snapshot_.load(std::memory_order_relaxed);
+        if (snap && snap->release() == 0) delete snap;
     }
 
+    // ─── Lock-free hot path (called from AAudio callback every ~4ms) ───
+    void process(float *samples, int32_t numFrames, int32_t channels) {
+        Snapshot *snap = snapshot_.load(std::memory_order_acquire);
+        if (!snap) return;
+        snap->acquire();  // prevent deletion while we use it
+        for (auto *fx : snap->effects)
+            if (fx->active())
+                fx->process(samples, numFrames, channels);
+        if (snap->release() == 0) delete snap;
+    }
+
+    // ─── Mutation paths (called from FFI/Dart threads, rare) ───
     void add(AudioEffect *fx) {
         std::lock_guard<std::mutex> lock(mutex_);
         effects_.push_back(fx);
+        rebuildSnapshot();
     }
 
     bool remove(const char *name) {
@@ -43,6 +61,7 @@ public:
             if (strcmp((*it)->name(), name) == 0) {
                 delete *it;
                 effects_.erase(it);
+                rebuildSnapshot();
                 return true;
             }
         }
@@ -53,15 +72,10 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto *fx : effects_) delete fx;
         effects_.clear();
+        rebuildSnapshot();
     }
 
-    void process(float *samples, int32_t numFrames, int32_t channels) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (auto *fx : effects_)
-            if (fx->active())
-                fx->process(samples, numFrames, channels);
-    }
-
+    // ─── Cold-path queries (rarely called, mutex is fine) ───
     int count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return (int)effects_.size();
@@ -86,8 +100,25 @@ public:
     }
 
 private:
+    struct Snapshot {
+        std::atomic<int32_t> refCount{1};
+        std::vector<AudioEffect*> effects;
+
+        void acquire() { refCount.fetch_add(1, std::memory_order_relaxed); }
+        int32_t release() { return refCount.fetch_sub(1, std::memory_order_acq_rel) - 1; }
+    };
+
+    void rebuildSnapshot() {
+        Snapshot *old = snapshot_.load(std::memory_order_relaxed);
+        Snapshot *snap = new Snapshot();
+        snap->effects = effects_;  // shallow copy of pointers
+        snapshot_.store(snap, std::memory_order_release);
+        if (old && old->release() == 0) delete old;
+    }
+
     mutable std::mutex mutex_;
     std::vector<AudioEffect*> effects_;
+    std::atomic<Snapshot*> snapshot_{nullptr};
 };
 
 // Effect factory registry — maps name → creator lambda.
