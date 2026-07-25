@@ -214,6 +214,8 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
 
     // mixLen: use full preFrames (no silence skip)
     int32_t mixLen = std::min({fadeLen, histCount, preFrames, space});
+    LOGI("  writeGaplessCrossfade: fadeLen=%d histCount=%d preFrames=%d space=%d mixLen=%d",
+         fadeLen, histCount, preFrames, space, mixLen);
 
     if (mixLen <= 0) {
         if (preFrames > 0 && space > 0) {
@@ -268,6 +270,8 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     }
 
     int32_t postRemaining = std::max(0, fadeLen - mixLen);
+    LOGI("  writeGaplessCrossfade: pushedMix=%d remaining=%d postRemaining=%d",
+         pushedMix, remaining, postRemaining);
     trk.crossfading = (postRemaining > 0) ? 1 : 0;
     trk.crossfadeRemaining = postRemaining > 0 ? postRemaining : 0;
 

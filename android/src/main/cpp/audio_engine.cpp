@@ -112,10 +112,16 @@ struct PreDecodeCtx {
     int32_t maxFrames;
     int32_t channels;
     int32_t totalFrames;
+    int32_t sampleRate;
 };
 
 static void predecodeMetadataCb(
-    const FLAC__StreamDecoder*, const FLAC__StreamMetadata*, void*) {}
+    const FLAC__StreamDecoder*, const FLAC__StreamMetadata *metadata, void *clientData) {
+    auto *ctx = (PreDecodeCtx*)clientData;
+    if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
+        ctx->sampleRate = metadata->data.stream_info.sample_rate;
+    }
+}
 
 static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
     const FLAC__StreamDecoder *, const FLAC__Frame *frame,
@@ -153,6 +159,7 @@ void predecodeFlac(TrackState &trk, const char *path) {
     ctx->maxFrames = MAX_PREDECODE_FRAMES;
     ctx->channels = 0;
     ctx->totalFrames = 0;
+    ctx->sampleRate = 0;
     FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
         decoder, path, predecodeWriteCb, predecodeMetadataCb, errorCallback, ctx);
     if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
@@ -176,8 +183,9 @@ void predecodeFlac(TrackState &trk, const char *path) {
         trk.preBuf = ctx->buf;
         trk.preBufFrames = ctx->totalFrames;
         trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
+        trk.preBufSampleRate = ctx->sampleRate;
         trk.preBufReady = 1;
-        LOGI("  predecode FLAC: %d frames ready, %d ch", ctx->totalFrames, trk.preBufChannels);
+        LOGI("  predecode FLAC: %d frames ready, %d ch, sr=%d", ctx->totalFrames, trk.preBufChannels, ctx->sampleRate);
     } else {
         LOGI("  predecode FLAC: zero frames decoded — not using preBuf");
         delete[] ctx->buf;

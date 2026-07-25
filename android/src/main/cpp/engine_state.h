@@ -70,6 +70,7 @@ struct TrackState {
     float *preBuf{nullptr};
     int preBufFrames{0};
     int preBufChannels{0};
+    int preBufSampleRate{0};           // source sample rate of preBuf (for resampling on SR mismatch)
     std::atomic<int> preBufReady{0};
 
     // Flag: skip pacing check after gapless transition to prevent decoder stall
