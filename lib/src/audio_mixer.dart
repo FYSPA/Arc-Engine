@@ -123,11 +123,11 @@ class AudioEngine {
   }
 
   /// Crossfade duration in milliseconds between gapless tracks.
-  /// 0 = off, max ~1000ms (limited by MAX_CROSSFADE_FRAMES at 48kHz).
+  /// 0 = off, max ~5000ms (limited by MAX_CROSSFADE_FRAMES at 44100Hz).
   static double get crossfadeMs => _crossfadeMs;
-  static double _crossfadeMs = 500.0;
+  static double _crossfadeMs = 3000.0;
   static set crossfadeMs(double v) {
-    _crossfadeMs = v.clamp(0.0, 1000.0);
+    _crossfadeMs = v.clamp(0.0, 5000.0);
     FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
   }
 

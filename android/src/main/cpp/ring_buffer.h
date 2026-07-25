@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // File: ring_buffer.h
 // Purpose: Lock-free SPSC ring buffer for interleaved float samples.
-//          Fixed capacity of 65536 samples. One producer (decoder thread),
+//          Fixed capacity of 524288 samples (~5.94s stereo at 44100Hz). One producer (decoder thread),
 //          one consumer (AAudio callback thread).
 // Importance: Core cross-thread audio transport. Used by every track.
 // Missing: None
@@ -16,7 +16,7 @@
 
 class RingBuffer {
 public:
-    static constexpr size_t kCapacity = 65536;
+    static constexpr size_t kCapacity = 524288;
     static constexpr size_t kMask = kCapacity - 1;
 
     RingBuffer() : m_buffer(new float[kCapacity]), m_writeIndex(0), m_readIndex(0) {

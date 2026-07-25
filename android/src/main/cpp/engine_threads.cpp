@@ -305,17 +305,14 @@ void flacPlaybackThread(int ti) {
 
         // ─── Early crossfade trigger ───
         // Start crossfade before track ends to avoid trailing silence.
-        // Triggers when remaining frames <= fadeLen + 48000 (~1.09s buffer).
-        // 48000 balances early trigger with avoiding trailing silence.
+        // Triggers when remaining frames <= fadeLen (~3s buffer for Spotify-style).
         if (!trk.loop && trk.hasNext && !trk.crossfading.load()
             && ps.info.totalSamples > 0) {
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
             int64_t remaining = ps.info.totalSamples - trk.writtenFrames;
-            if (remaining > 0 && remaining <= fadeLen + 48000) {
-                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)+48000  wf=%lld total=%lld  triggerPoint=%.2fs before end",
-                     ti, (long long)remaining, fadeLen,
-                     (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                     (double)remaining / 44100.0);
+            if (remaining > 0 && remaining <= fadeLen) {
+                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)",
+                     ti, (long long)remaining, fadeLen);
                 goto flac_gapless;
             }
         }

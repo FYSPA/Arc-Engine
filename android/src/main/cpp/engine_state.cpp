@@ -152,13 +152,10 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     if (histCount > 0) histCount--;  // exclude newest frame (already in ring buffer)
     int32_t preFrames = trk.preBufReady ? trk.preBufFrames : 0;
 
-    LOGI("  crossfade setup: fadeLen=%d histCount=%d preFrames=%d avail=%d", fadeLen, histCount, preFrames, avail);
-
     // ─── Caso 1: crossfade=0 ───
     if (fadeLen <= 0) {
         if (preFrames > 0) {
             trk.ringBuf->push(trk.preBuf, preFrames, trk.preBufChannels);
-            LOGI("  gapless direct: %d frames (no crossfade)", preFrames);
         }
         delete[] trk.preBuf; trk.preBuf = nullptr;
         trk.preBufReady = 0; trk.preBufFrames = 0;
@@ -194,7 +191,6 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
                         fadeBuf[i * fadeCh + c] = 0;
                 }
                 trk.ringBuf->push(fadeBuf.data(), n, fadeCh);
-                LOGI("  gapless fade-out: %d frames (no preBuf, ch=%d, startIdx=%d)", n, fadeCh, startIdx);
             }
         }
         trk.crossfading = 1;
@@ -210,79 +206,25 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     // of the newest frame which is already in the ring buffer).
     int32_t space = trk.ringBuf->capacity(fadeCh) - avail;
 
-    // Scan backwards through fadeHistory to skip trailing silence in old track.
-    // This avoids a volume dip when the old track ends with digital silence.
-    float silenceThresh = 1e-3f;
+    // Spotify-style: no silence scanning. Use gain curves directly.
+    // The oldest frame in fadeHistory is at fadeHistPos (it wraps around the circular buffer).
+    // We go BACKWARDS from the newest frame through history.
     int32_t newestIdx = (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-    bool audioFound = false;
-    int32_t scannedSilent = 0;
-    for (int32_t s = 0; s < histCount; s++) {
-        int checkIdx = (trk.fadeHistPos - 2 - s + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-        float absMax = std::max(fabsf(trk.fadeHistory[checkIdx * 2]),
-                                fabsf(trk.fadeHistory[checkIdx * 2 + 1]));
-        if (absMax > silenceThresh) {
-            newestIdx = checkIdx;
-            audioFound = true;
-            scannedSilent = s;
-            break;
-        }
-    }
-
-    LOGI("  SILENCE SCAN: histCount=%d scanned=%d/%d audioFound=%s silentFrames=%d newestIdx=%d default=%d",
-         histCount, histCount, histCount, audioFound ? "YES" : "NO", scannedSilent, newestIdx,
-         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
-
-    // Scan preBuf forwards to skip leading silence in the new track.
-    // This avoids mixing silence+silence when both tracks have silence at boundaries.
     int32_t preBufStart = 0;
-    for (int32_t p = 0; p < preFrames; p++) {
-        float absMax = std::max(fabsf(trk.preBuf[p * trk.preBufChannels]),
-                                fabsf(trk.preBuf[p * trk.preBufChannels + 1]));
-        if (absMax > silenceThresh) {
-            preBufStart = p;
-            break;
-        }
-    }
-    int32_t availPreBuf = preFrames - preBufStart;
-    if (preBufStart > 0) {
-        LOGI("  PREBUF SILENCE SKIP: preBufStart=%d availPreBuf=%d/%d (skipped %d leading silent frames)",
-             preBufStart, availPreBuf, preFrames, preBufStart);
-    }
 
-    // Log fadeHistory at key positions to understand the audio profile
-    auto logFadeHist = [&](const char* label, int32_t idx) {
-        int i1 = (idx + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-        int i2 = (idx - 1 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-        int i3 = (idx - fadeLen/2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-        LOGI("  %s [%d]={%.6f,%.6f} [%d]={%.6f,%.6f} [%d(mid)]={%.6f,%.6f}",
-             label, i1, trk.fadeHistory[i1*2], trk.fadeHistory[i1*2+1],
-             i2, trk.fadeHistory[i2*2], trk.fadeHistory[i2*2+1],
-             i3, trk.fadeHistory[i3*2], trk.fadeHistory[i3*2+1]);
-    };
-    logFadeHist("fadeHist @newest/next/mid:", newestIdx);
-
-    // Log preBuf at key positions (showing from preBufStart)
-    LOGI("  preBuf [%d]={%.6f,%.6f} [%d+1]={%.6f,%.6f} [%d+100]={%.6f,%.6f} [%d+mid]={%.6f,%.6f}",
-         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
-         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
-         preBufStart, trk.preBuf[(preBufStart+100)*trk.preBufChannels], trk.preBuf[(preBufStart+100)*trk.preBufChannels+1],
-         preBufStart, trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels], trk.preBuf[(preBufStart+preFrames/2)*trk.preBufChannels+1]);
-
-    // Calculate mixLen using availPreBuf (frames after skipping leading silence)
-    int32_t mixLen = std::min({fadeLen, histCount, availPreBuf, space});
-    LOGI("  mixLen=%d (min of: fadeLen=%d histCount=%d availPreBuf=%d space=%d)",
-         mixLen, fadeLen, histCount, availPreBuf, space);
+    // mixLen: use full preFrames (no silence skip)
+    int32_t mixLen = std::min({fadeLen, histCount, preFrames, space});
 
     if (mixLen <= 0) {
-        if (availPreBuf > 0 && space > 0) {
-            int32_t n = availPreBuf < space ? availPreBuf : space;
+        if (preFrames > 0 && space > 0) {
+            int32_t n = preFrames < space ? preFrames : space;
             for (int32_t j = 0; j < n; j++) {
                 float angle = ((float)j / fadeLen) * 1.57079632679f;
                 float gainNew = sinf(angle);
                 for (int32_t c = 0; c < trk.preBufChannels; c++)
-                    trk.preBuf[(preBufStart + j) * trk.preBufChannels + c] *= gainNew;
+                    trk.preBuf[j * trk.preBufChannels + c] *= gainNew;
             }
-            trk.ringBuf->push(trk.preBuf + preBufStart * trk.preBufChannels, n, trk.preBufChannels);
+            trk.ringBuf->push(trk.preBuf, n, trk.preBufChannels);
         }
         trk.crossfading = 1;
         trk.crossfadeRemaining = fadeLen;
@@ -292,9 +234,8 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     }
 
     std::vector<float> mixBuf(mixLen * fadeCh);
-    // Goes backwards through history — old track fades out while new track fades in.
-    // newestIdx starts at the last non-silent frame (or fadeHistPos-2 if all silent).
-    // preBufStart skips leading silence in the new track.
+    // Equal-power crossfade: old track fades out (cos), new track fades in (sin).
+    // Goes backwards through fadeHistory (old track tail) and forwards through preBuf (new track head).
     for (int32_t i = 0; i < mixLen; i++) {
         float angle = ((float)i / fadeLen) * 1.57079632679f;
         float gainOld = cosf(angle);
@@ -302,58 +243,16 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         int hi = (newestIdx - i + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
         for (int32_t c = 0; c < fadeCh && c < 2; c++)
             mixBuf[i * fadeCh + c] = trk.fadeHistory[hi * 2 + c] * gainOld
-                                   + trk.preBuf[(preBufStart + i) * trk.preBufChannels + c] * gainNew;
+                                   + trk.preBuf[i * trk.preBufChannels + c] * gainNew;
         for (int32_t c = 2; c < fadeCh; c++)
             mixBuf[i * fadeCh + c] = 0;
     }
 
-    LOGI("  SYNCHRONIZATION: avail=%d fadeHistPos=%d newestIdx=%d (default was %d)",
-         avail, trk.fadeHistPos, newestIdx,
-         (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES);
-
-    LOGI("  MIX BUFFER SAMPLES:");
-    LOGI("    [0] mix={%.6f,%.6f}  [1] mix={%.6f,%.6f}  [mid] mix={%.6f,%.6f}",
-         mixBuf[0], mixBuf[1], mixBuf[2], mixBuf[3],
-         mixBuf[(mixLen/2)*fadeCh], mixBuf[(mixLen/2)*fadeCh+1]);
-
-    LOGI("  FADEHISTORY @ newestIdx[%d]: {%.6f,%.6f}  @ [%d]: {%.6f,%.6f}",
-         newestIdx, trk.fadeHistory[(newestIdx)*2], trk.fadeHistory[(newestIdx)*2+1],
-         (newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES,
-         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2],
-         trk.fadeHistory[((newestIdx-1+MAX_CROSSFADE_FRAMES)%MAX_CROSSFADE_FRAMES)*2+1]);
-
-    LOGI("  PREBUFFER SAMPLES (from preBufStart=%d):", preBufStart);
-    LOGI("    [%d]={%.6f,%.6f}  [%d+1]={%.6f,%.6f}  [%d+mid]={%.6f,%.6f}",
-         preBufStart, trk.preBuf[preBufStart*trk.preBufChannels], trk.preBuf[preBufStart*trk.preBufChannels+1],
-         preBufStart, trk.preBuf[(preBufStart+1)*trk.preBufChannels], trk.preBuf[(preBufStart+1)*trk.preBufChannels+1],
-         preBufStart, trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels], trk.preBuf[(preBufStart+availPreBuf/2)*trk.preBufChannels+1]);
-
-    float gain0_old = cosf(0.0f);
-    float gain0_new = sinf(0.0f);
-    float gainMid_old = cosf(((float)(mixLen/2)/fadeLen)*1.57079632679f);
-    float gainMid_new = sinf(((float)(mixLen/2)/fadeLen)*1.57079632679f);
-
-    LOGI("  GAIN CURVE (equal-power crossfade):");
-    LOGI("    @[0]: oldTrack=%.6f newTrack=%.6f", gain0_old, gain0_new);
-    LOGI("    @[mid]: oldTrack=%.6f newTrack=%.6f", gainMid_old, gainMid_new);
-
-    LOGI("  RING BUFFER STATE:");
-    LOGI("    Before: avail=%d capacity=%d space=%d", avail, trk.ringBuf->capacity(fadeCh), space);
-
     int32_t pushedMix = trk.ringBuf->push(mixBuf.data(), mixLen, fadeCh);
-    int32_t availAfterMix = trk.ringBuf->available(fadeCh);
 
-    LOGI("    After push: pushed=%d availAfter=%d (expected ~%d)",
-         pushedMix, availAfterMix, avail + mixLen);
-
-    LOGI("  SUMMARY: mixLen=%d fadeLen=%d histCount=%d preFrames=%d preBufStart=%d availPreBuf=%d ch=%d",
-         mixLen, fadeLen, histCount, preFrames, preBufStart, availPreBuf, fadeCh);
-    LOGI("    Result: %s",
-         (mixBuf.size() >= 2 && mixBuf[0] != 0.0f && mixBuf[1] != 0.0f) ? "MIX HAS AUDIO" : "MIX IS ZERO!");
-
-    int32_t remaining = availPreBuf - mixLen;
+    int32_t remaining = preFrames - mixLen;
     if (remaining > 0) {
-        float *remPtr = trk.preBuf + (preBufStart + mixLen) * trk.preBufChannels;
+        float *remPtr = trk.preBuf + mixLen * trk.preBufChannels;
         if (mixLen < fadeLen) {
             // Crossfade incomplete — continue sin curve into remaining frames
             for (int32_t j = 0; j < remaining; j++) {
