@@ -79,6 +79,10 @@ void stopTrack(int index) {
     trk.preBufReady = 0;
     trk.preBufFrames = 0;
     trk.skipPacing = 0;
+    trk.resampleToStream = 0;
+    trk.streamSampleRate = 0;
+    trk.resampleOverlapCount = 0;
+    memset(trk.resampleOverlap, 0, sizeof(trk.resampleOverlap));
 
     LOGI("stopTrack[%d]: done", index);
 }
@@ -202,20 +206,10 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     // NO reset() — the race between reset() and the AAudio callback's pop()
     // causes push() to fail silently (unsigned underflow → used >= capacity → return 0).
     // Instead, we append the crossfade AFTER existing old-track data in the ring buffer.
-    // Crossfade starts from fadeHistPos-2 (second-to-last decoded frame, avoiding double-play
-    // of the newest frame which is already in the ring buffer).
     int32_t space = trk.ringBuf->capacity(fadeCh) - avail;
-
-    // Spotify-style: no silence scanning. Use gain curves directly.
-    // The oldest frame in fadeHistory is at fadeHistPos (it wraps around the circular buffer).
-    // We go BACKWARDS from the newest frame through history.
-    int32_t newestIdx = (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-    int32_t preBufStart = 0;
 
     // mixLen: use full preFrames (no silence skip)
     int32_t mixLen = std::min({fadeLen, histCount, preFrames, space});
-    LOGI("  writeGaplessCrossfade: fadeLen=%d histCount=%d preFrames=%d space=%d mixLen=%d",
-         fadeLen, histCount, preFrames, space, mixLen);
 
     if (mixLen <= 0) {
         if (preFrames > 0 && space > 0) {
@@ -235,22 +229,27 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         return preFrames;
     }
 
-    std::vector<float> mixBuf(mixLen * fadeCh);
-    // Equal-power crossfade: old track fades out (cos), new track fades in (sin).
-    // Goes backwards through fadeHistory (old track tail) and forwards through preBuf (new track head).
-    for (int32_t i = 0; i < mixLen; i++) {
-        float angle = ((float)i / fadeLen) * 1.57079632679f;
-        float gainOld = cosf(angle);
-        float gainNew = sinf(angle);
-        int hi = (newestIdx - i + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-        for (int32_t c = 0; c < fadeCh && c < 2; c++)
-            mixBuf[i * fadeCh + c] = trk.fadeHistory[hi * 2 + c] * gainOld
-                                   + trk.preBuf[i * trk.preBufChannels + c] * gainNew;
-        for (int32_t c = 2; c < fadeCh; c++)
-            mixBuf[i * fadeCh + c] = 0;
+    // Equal-power crossfade: compute and push in chunks to avoid ring buffer underrun.
+    // Full-buffer computation (132k frames) takes ~22ms — during that time the ring buffer
+    // empties and the callback outputs silence → audible click.
+    static const int32_t CHUNK = 192;  // 1 callback period at 44100Hz
+    float chunkBuf[CHUNK * fadeCh];
+    int32_t newestIdx = (trk.fadeHistPos - 1 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
+    for (int32_t i = 0; i < mixLen; i += CHUNK) {
+        int32_t n = std::min(CHUNK, mixLen - i);
+        for (int32_t j = 0; j < n; j++) {
+            float angle = ((float)(i + j) / fadeLen) * 1.57079632679f;
+            float gainOld = cosf(angle);
+            float gainNew = sinf(angle);
+            int hi = (newestIdx - (i + j) + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
+            for (int32_t c = 0; c < fadeCh && c < 2; c++)
+                chunkBuf[j * fadeCh + c] = trk.fadeHistory[hi * 2 + c] * gainOld
+                                        + trk.preBuf[(i + j) * trk.preBufChannels + c] * gainNew;
+            for (int32_t c = 2; c < fadeCh; c++)
+                chunkBuf[j * fadeCh + c] = 0;
+        }
+        trk.ringBuf->push(chunkBuf, n, fadeCh);
     }
-
-    int32_t pushedMix = trk.ringBuf->push(mixBuf.data(), mixLen, fadeCh);
 
     int32_t remaining = preFrames - mixLen;
     if (remaining > 0) {
@@ -270,8 +269,6 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     }
 
     int32_t postRemaining = std::max(0, fadeLen - mixLen);
-    LOGI("  writeGaplessCrossfade: pushedMix=%d remaining=%d postRemaining=%d",
-         pushedMix, remaining, postRemaining);
     trk.crossfading = (postRemaining > 0) ? 1 : 0;
     trk.crossfadeRemaining = postRemaining > 0 ? postRemaining : 0;
 

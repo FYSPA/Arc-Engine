@@ -75,6 +75,16 @@ struct TrackState {
 
     // Flag: skip pacing check after gapless transition to prevent decoder stall
     std::atomic<int> skipPacing{0};
+
+    // Real-time resampling: when set, flacEngineWriteCallback resamples decoded blocks
+    // from native SR (trk.sampleRate) to stream SR before pushing to ring buffer.
+    // Used for SR mismatch gapless transitions to avoid AAudio stream recreation.
+    std::atomic<int> resampleToStream{0};
+    int32_t streamSampleRate{0};  // target SR for resampling (= gCtl.sampleRate at crossfade time)
+
+    // Overlap buffer for block-continuous sinc resampling (W=8 samples per channel)
+    float resampleOverlap[8 * MAX_CHANNELS]{0};
+    int32_t resampleOverlapCount{0};  // 0 = first block, 8 = subsequent blocks
 };
 
 // ─── Crossfade helpers (inline, after TrackState is complete) ─────────────────

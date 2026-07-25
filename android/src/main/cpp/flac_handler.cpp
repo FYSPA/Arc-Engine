@@ -12,6 +12,7 @@
 #include "aaudio_utils.h"
 #include "engine_state.h"
 #include "ring_buffer.h"
+#include "common.h"
 
 #include <cstring>
 #include <aaudio/AAudio.h>
@@ -78,15 +79,42 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
 
     float floatBuf[frames * channels];
     for (int32_t i = 0; i < frames; i++)
-        for (int32_t ch = 0; ch < channels; ch++)
-            floatBuf[i * channels + ch] = buffer[ch][i] * scale;
+        for (int32_t ch = 0; ch < channels; ch++) {
+            float s = buffer[ch][i] * scale;
+            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
+            floatBuf[i * channels + ch] = s;
+        }
 
     if (trk.ringBuf) {
-        updateFadeHistory(trk, floatBuf, frames, channels);
-        applyFadeIn(trk, floatBuf, frames, channels);
-        trk.ringBuf->push(floatBuf, frames, channels);
-        trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
-        if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
+        if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
+            && trk.streamSampleRate != trk.sampleRate) {
+            double ratio = (double)trk.streamSampleRate / trk.sampleRate;
+            int32_t extLen = trk.resampleOverlapCount + frames;
+            int32_t skipOutput = (trk.resampleOverlapCount > 0)
+                ? (int32_t)(trk.resampleOverlapCount * ratio + 0.5) : 0;
+            int32_t totalOut = (int32_t)(extLen * ratio + 0.5);
+            int32_t outFrames = totalOut - skipOutput;
+            if (outFrames > 0 && outFrames <= frames * 2) {
+                std::vector<float> resampled(outFrames * channels);
+                resampleSincStream(resampled.data(), outFrames, floatBuf, frames, channels, ratio,
+                                   trk.resampleOverlap, trk.resampleOverlapCount);
+                for (int32_t i = 0; i < outFrames * channels; i++) {
+                    if (resampled[i] > 1.0f) resampled[i] = 1.0f;
+                    else if (resampled[i] < -1.0f) resampled[i] = -1.0f;
+                }
+                updateFadeHistory(trk, resampled.data(), outFrames, channels);
+                applyFadeIn(trk, resampled.data(), outFrames, channels);
+                trk.ringBuf->push(resampled.data(), outFrames, channels);
+                trk.lastFrame[0] = resampled[(outFrames - 1) * channels];
+                if (channels > 1) trk.lastFrame[1] = resampled[(outFrames - 1) * channels + 1];
+            }
+        } else {
+            updateFadeHistory(trk, floatBuf, frames, channels);
+            applyFadeIn(trk, floatBuf, frames, channels);
+            trk.ringBuf->push(floatBuf, frames, channels);
+            trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
+            if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
+        }
     }
     if (trk.pcmRingBuf) {
         trk.pcmRingBuf->push(floatBuf, frames, channels);

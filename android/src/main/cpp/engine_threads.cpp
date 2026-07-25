@@ -366,12 +366,18 @@ void flacPlaybackThread(int ti) {
                     double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
                     int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
                     float *resampled = new float[outFrames * 2];
+                    int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
+                    auto t0 = std::chrono::steady_clock::now();
                     resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+                    auto t1 = std::chrono::steady_clock::now();
+                    int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
                     delete[] trk.preBuf;
                     trk.preBuf = resampled;
                     trk.preBufFrames = outFrames;
-                    LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz)",
-                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate);
+                    LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
+                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate,
+                         (long long)resampleMs, ringBefore,
+                         trk.ringBuf ? trk.ringBuf->available(ch) : -1);
                 }
                 // Crossfade: push mixed audio into ring buffer
                 int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
@@ -384,27 +390,17 @@ void flacPlaybackThread(int ti) {
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = nullptr;
-                // If SR mismatch: drain ring buffer with old stream, then recreate
+                // If SR mismatch: enable real-time resampling in callback (no stream recreation)
                 if (srMismatch) {
-                    LOGI("FLAC thread[%d]: draining ring buffer before stream recreation", ti);
-                    while (trk.ringBuf->available(ch) > 192) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    }
-                    closeAAudioStream(gCtl.stream);
-                    gCtl.stream = nullptr;
-                    if (trk.ringBuf) trk.ringBuf->reset();
-                    int32_t newSR = trk.preBufSampleRate;
-                    gCtl.sampleRate = newSR;
-                    AAudioStream *newStream = createAAudioStreamCallback(
-                        newSR, gCtl.outChannels, aaudioDataCallback, nullptr);
-                    if (newStream) {
-                        gCtl.stream = newStream;
-                        LOGI("FLAC thread[%d]: AAudio stream recreated at %dHz", ti, newSR);
-                    } else {
-                        LOGE("FLAC thread[%d]: AAudio stream recreate failed", ti);
-                    }
+                    trk.resampleToStream = 1;
+                    trk.streamSampleRate = gCtl.sampleRate;
+                    LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled",
+                         ti, trk.preBufSampleRate, gCtl.sampleRate);
+                } else {
+                    trk.resampleToStream = 0;
+                    trk.streamSampleRate = 0;
                 }
-                // Create new decoder (now that stream is correct SR)
+                // Create new decoder
                 decoder = FLAC__stream_decoder_new();
                 if (!decoder) break;
                 FLAC__stream_decoder_set_metadata_respond_all(decoder);
@@ -491,12 +487,18 @@ void flacPlaybackThread(int ti) {
                     double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
                     int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
                     float *resampled = new float[outFrames * 2];
+                    int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
+                    auto t0 = std::chrono::steady_clock::now();
                     resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+                    auto t1 = std::chrono::steady_clock::now();
+                    int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
                     delete[] trk.preBuf;
                     trk.preBuf = resampled;
                     trk.preBufFrames = outFrames;
-                    LOGI("FLAC thread[%d]: seek-resampled preBuf %d→%d frames (%dHz→%dHz)",
-                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate);
+                    LOGI("FLAC thread[%d]: seek-resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
+                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate,
+                         (long long)resampleMs, ringBefore,
+                         trk.ringBuf ? trk.ringBuf->available(ch) : -1);
                 }
                 // Crossfade: push mixed audio into ring buffer
                 int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
@@ -509,25 +511,15 @@ void flacPlaybackThread(int ti) {
                 FLAC__stream_decoder_finish(decoder);
                 FLAC__stream_decoder_delete(decoder);
                 decoder = nullptr;
-                // If SR mismatch: drain ring buffer with old stream, then recreate
+                // If SR mismatch: enable real-time resampling in callback (no stream recreation)
                 if (srMismatch) {
-                    LOGI("FLAC thread[%d]: draining ring buffer before stream recreation (seek-gapless)", ti);
-                    while (trk.ringBuf->available(ch) > 192) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    }
-                    closeAAudioStream(gCtl.stream);
-                    gCtl.stream = nullptr;
-                    if (trk.ringBuf) trk.ringBuf->reset();
-                    int32_t newSR = trk.preBufSampleRate;
-                    gCtl.sampleRate = newSR;
-                    AAudioStream *newStream = createAAudioStreamCallback(
-                        newSR, gCtl.outChannels, aaudioDataCallback, nullptr);
-                    if (newStream) {
-                        gCtl.stream = newStream;
-                        LOGI("FLAC thread[%d]: AAudio stream recreated at %dHz (seek-gapless)", ti, newSR);
-                    } else {
-                        LOGE("FLAC thread[%d]: AAudio stream recreate failed (seek-gapless)", ti);
-                    }
+                    trk.resampleToStream = 1;
+                    trk.streamSampleRate = gCtl.sampleRate;
+                    LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled (seek-gapless)",
+                         ti, trk.preBufSampleRate, gCtl.sampleRate);
+                } else {
+                    trk.resampleToStream = 0;
+                    trk.streamSampleRate = 0;
                 }
                 // Create new decoder (now that stream is correct SR)
                 decoder = FLAC__stream_decoder_new();
