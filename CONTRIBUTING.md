@@ -117,22 +117,27 @@ arc_engine/
 │   ├── arc_engine.dart           # Library barrel file (re-exports)
 │   └── src/
 │       ├── ffi_bindings.dart       # All FFI lookupFunction definitions
-│       ├── track_player.dart       # TrackPlayer with streams + Timer polling
-│       ├── audio_mixer.dart        # AudioEngine singleton, 4 tracks, EQ
-│       └── pcm_stream.dart         # Real-time PCM stream for visualization
+│       ├── track_player.dart       # TrackPlayer with setNextTrack, streams + Timer polling
+│       ├── audio_mixer.dart        # AudioEngine singleton, 4 tracks, EQ, crossfade
+│       ├── pcm_stream.dart         # Real-time PCM stream for visualization
+│       └── audio_focus.dart        # Audio focus + BT auto-pause
 ├── android/src/main/cpp/
 │   ├── CMakeLists.txt              # Native build configuration
 │   ├── audio_engine.cpp            # AAudio callback + FFI exports
 │   ├── dispatcher.cpp/.h           # Format dispatch (track_play)
-│   ├── engine_state.cpp/.h         # Global state (gCtl) + stopEngine/resetCtl
-│   ├── engine_threads.cpp/.h       # Decoder threads (WAV/FLAC/Media/Stream)
+│   ├── engine_state.cpp/.h         # Global state (gCtl) + crossfade + gapless
+│   ├── engine_threads.cpp/.h       # Decoder threads + sinc resampling
 │   ├── aaudio_utils.cpp/.h         # AAudio stream creation/management
 │   ├── ring_buffer.h               # Lock-free SPSC ring buffer
+│   ├── common.h                    # Sinc lookup table + shared macros/types
+│   ├── dsp_processor.cpp/.h        # 10-band biquad EQ
+│   ├── compressor.cpp/.h           # Compressor (threshold/ratio/knee/attack/release)
+│   ├── reverb.cpp/.h               # Reverb (4 comb + 2 all-pass + pre-delay)
+│   ├── limiter.cpp/.h              # Post-mix limiter (hard-clipper)
+│   ├── effect.h                    # Effect chain manager (compressor + reverb)
 │   ├── wav_handler.cpp/.h          # Legacy WAV blocking playback
 │   ├── flac_handler.cpp/.h         # Legacy FLAC playback + metadata
 │   ├── media_handler.cpp/.h        # Legacy media blocking playback
-│   ├── common.h                    # Shared macros and types
-│   ├── dsp_processor.h             # 10-band EQ with biquad filters
 │   └── libs/                       # Precompiled libraries (FLAC + Ogg)
 ├── test/
 │   ├── arc_engine_test.dart      # 10 tests — AudioEngine singleton, compat
@@ -144,8 +149,7 @@ arc_engine/
 │       ├── dsp_processor_test.cpp  # 12 tests — EQ filters, bypass, bounds
 │       ├── ring_buffer_benchmark.cpp
 │       ├── dsp_processor_benchmark.cpp
-│       ├── build_and_run.sh
-│       └── common.h                # Mock for host-based C++ testing
+│       └── build_and_run.sh
 ├── example/                        # Flutter example app
 │   └── lib/
 │       ├── main.dart
@@ -154,9 +158,10 @@ arc_engine/
 │           ├── audio_controls.dart
 │           ├── library_status_card.dart
 │           ├── pcm_visualizer.dart
+│           ├── waveform_widget.dart
 │           ├── eq_dialog.dart
 │           ├── status_display.dart
-│           └── library_status_card.dart
+│           └── app.dart
 ├── LICENSE
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
@@ -177,6 +182,9 @@ arc_engine/
 - Cross-thread signaling uses **eventfd** (kernel-level) to avoid memory visibility issues on ARM devices
 - The SPSC ring buffer in `ring_buffer.h` is lock-free — do not add locks
 - The decoder thread writes to the ring buffer; the AAudio callback reads — do not reverse these roles
+- The **sinc lookup table** (`SincTable` in `common.h`) uses a static local for lazy initialization — do not initialize it globally
+- **Effects chain**: compressor, reverb, and limiter are post-EQ — they process after the 10-band EQ in the callback
+- **Crossfade** uses `writeGaplessCrossfade()` in `engine_state.cpp` — chunked push (192 frames) to avoid underruns during SR mismatch resampling
 
 ### Dart Code
 

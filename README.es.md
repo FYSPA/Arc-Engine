@@ -37,6 +37,10 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 - **Reproducir** archivos FLAC, WAV, MP3, AAC y OGG nativamente
 - **Streaming** desde URLs HTTP directas
 - Controles **Pausa / Reanudar / Buscar / Detener**
+- **Transiciones gapless** via `setNextTrack()` — encadena tracks sin silencio entre ellos
+- **Crossfade estilo Spotify** — crossfade de potencia igual configurable (0–5s) entre tracks
+- **Manejo de SR mismatch** — resampleo sinc en tiempo real cuando tracks tienen frecuencias de muestreo distintas
+- **Pausa automática BT** — la reproducción se pausa al desconectar auriculares/Bluetooth
 - Baja latencia con **AAudio callback** + **buffer ring SPSC** sin locks
 - Señalización cross-thread mediante **eventfd** del kernel Linux
 - Código C++ nativo puro — sin sobrecarga de puentes Java/Kotlin
@@ -53,8 +57,14 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 | **Streaming por URL** | Streaming HTTP nativo (API 29+) con fallback de descarga para dispositivos antiguos. Diálogo de URL configurable con barra de progreso y cancelación. |
 | **Reproducción Nativa** | AAudio callback con salida PCM float + buffer ring lock-free |
 | **Controles** | Pausa / Reanudar / Buscar / Detener con señalización eventfd |
+| **Transiciones gapless** | `setNextTrack()` — encadena tracks sin silencio entre ellos |
+| **Crossfade** | Crossfade estilo Spotify de potencia igual (0–5s) con resampleo automático SR mismatch |
+| **SR mismatch** | Resampleo sinc en tiempo real (tabla lookup precomputada) para tracks con frecuencias de muestreo distintas |
 | **Mezclador multi-pista** | Hasta 4 pistas concurrentes con volumen, paneo y controles independientes |
 | **EQ DSP de 10 bandas** | Ecualizador global con tipos peaking, low/high-shelf y low/high-pass |
+| **Cadena de efectos** | Efectos post-EQ: compresor (threshold/ratio/knee/attack/release) y reverb (4 comb + 2 all-pass) |
+| **Limiter** | Limiter post-mecla hard-clipper con threshold configurable (-60 a 0 dB) |
+| **Pausa BT automática** | Pausa al desconectar auriculares/Bluetooth, reconexión automática |
 | **PCM Stream a Dart** | Stream en tiempo real de samples PCM para visualización (VU meter, waveform) |
 | **Selector de archivos** | Importa archivos de audio via SAF (FLAC, WAV, MP3, AAC, OGG, M4A) |
 | **Puente FFI** | Comunicación directa C++ a Dart — sin platform channels |
@@ -71,6 +81,7 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 │  │         AudioEngine (arc_engine.dart)                │   │
 │  │  startAudio() │ streamUrl() │ stop() │ pause()        │   │
 │  │  resume() │ seek() │ startPcmStream()                  │   │
+│  │  crossfadeMs │ tracks[i].setNextTrack()                │   │
 │  └───────────────┴────────────┴─────────┴────────────────┘   │
 │                          │ dart:ffi                          │
 └──────────────────────────┼──────────────────────────────────┘
@@ -81,31 +92,30 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 │  ┌──────────┐  ┌──────────────┐  ┌──────────────────────┐   │
 │  │dispatcher│─▶│engine_state   │  │  Threads Decodific.  │   │
 │  │.cpp      │  │(gCtl, stop,  │  │  ┌────────────────┐  │   │
-│  │          │  │ reset)       │  │  │wavPlaybackThread│  │   │
-│  │start_    │  └──────┬───────┘  │  │flacPlayback    │  │   │
-│  │audio()   │         │ eventfd  │  │Thread          │  │   │
-│  │start_    │         ▼ stop sig │  │mediaPlayback   │  │   │
-│  │media_    │  ┌──────────┐     │  │Thread          │  │   │
-│  │stream()  │  │aaudio_   │     │  │mediaStream     │  │   │
-│  └──────────┘  │utils     │     │  │PlaybackThread  │  │   │
-│                │(create,  │     │  └────────┬───────┘  │   │
-│                │ close)   │     │           │          │   │
-│                └──────────┘     │           ▼          │   │
-│                                 │  ┌────────────────┐  │   │
-│                                 │  │  Ring Buffer   │  │   │
+│  │          │  │ reset,       │  │  │wavPlaybackThread│  │   │
+│  │start_    │  │ crossfade,   │  │  │flacPlayback    │  │   │
+│  │audio()   │  │ fade)        │  │  │Thread          │  │   │
+│  │start_    │  └──────┬───────┘  │  │mediaPlayback   │  │   │
+│  │media_    │         │ eventfd  │  │Thread          │  │   │
+│  │stream()  │         ▼ stop sig │  │mediaStream     │  │   │
+│  └──────────┘  ┌──────────┐     │  │PlaybackThread  │  │   │
+│                │aaudio_   │     │  └────────┬───────┘  │   │
+│                │utils     │     │           │          │   │
+│                │(create,  │     │           ▼          │   │
+│                │ close)   │     │  ┌────────────────┐  │   │
+│                └──────────┘     │  │  Ring Buffer   │  │   │
 │                                 │  │ (SPSC lock-free)│  │   │
 │                                 │  └────────┬───────┘  │   │
 │                                 └───────────┼──────────┘   │
 │                                             │              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │              │
-│  │wav_      │  │flac_     │  │media_    │  │              │
-│  │handler   │  │handler   │  │handler   │  │              │
-│  │(legacy)  │  │(legacy)  │  │(legacy)  │  │              │
-│  └──────────┘  └──────────┘  └──────────┘  │              │
-│                                             ▼              │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │     AAudio Callback (audio_engine.cpp)                │  │
-│  │  aaudioDataCallback() — lee del ring buffer           │  │
+│  │  Lee del ring buffer                                  │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │  │
+│  │  │ Sinc Resamp.│─▶│   EQ + DSP  │─▶│   Limiter   │  │  │
+│  │  │ (crossfade) │  │ 10-band EQ  │  │  post-mix   │  │  │
+│  │  └─────────────┘  │ + Efectos   │  │  hard-clip  │  │  │
+│  │                   └─────────────┘  └─────────────┘  │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                            │
@@ -118,8 +128,9 @@ Soporta **FLAC, WAV, MP3, AAC, y OGG** con salida de baja latencia mediante AAud
 1. **Dart** llama a `AudioEngine.startAudio(ruta)` o `AudioEngine.streamUrl(url)` via FFI
 2. **dispatcher.cpp** enruta al handler apropiado (archivo local por extensión, o stream URL via MediaExtractor)
 3. **Thread decodificador** (WAV/FLAC/Media/Stream) decodifica audio y envía samples float PCM al **buffer ring SPSC** (lock-free)
-4. **AAudio callback** (`aaudioDataCallback`) se ejecuta en un thread de alta prioridad, obtiene samples del ring buffer y los envía al dispositivo
-5. **Controles** (stop/pause/seek) usan señalización **eventfd** del kernel para comunicación cross-thread confiable
+4. **AAudio callback** (`aaudioDataCallback`) se ejecuta en un thread de alta prioridad, obtiene samples del ring buffer, aplica el **resampleo sinc** (si hay SR mismatch o crossfade activo), luego ejecuta **EQ + cadena de efectos + limiter**, y los envía al dispositivo de audio
+5. **Transiciones gapless**: Cuando un track está cerca del final y se llamó `setNextTrack()`, el motor dispara un **crossfade** que mezcla el track saliente y entrante durante una duración configurable (default 3s)
+6. **Controles** (stop/pause/seek) usan señalización **eventfd** del kernel para comunicación cross-thread confiable
 
 ---
 
@@ -175,6 +186,19 @@ import 'package:arc_engine/arc_engine.dart';
 
 int resultado = AudioEngine.startAudio('/ruta/al/archivo.wav');
 if (resultado == 0) print('Reproducción iniciada!');
+```
+
+### Transiciones Gapless
+
+```dart
+// Establecer siguiente track para reproducción gapless
+await AudioEngine.instance.tracks[0].setNextTrack('/ruta/al/siguiente.wav', name: 'Siguiente');
+
+// Configurar duración del crossfade (0–5000ms, default 3000ms)
+AudioEngine.crossfadeMs = 3000.0;
+
+// Sin crossfade (gapless puro)
+AudioEngine.crossfadeMs = 0.0;
 ```
 
 ### Streaming por URL
@@ -248,6 +272,9 @@ int dur = AudioEngine.getDuration();
 | Buffer Ring | **SPSC Personalizado** | Lock-free single-producer single-consumer |
 | Señalización | **eventfd** | Señalización cross-thread via kernel |
 | DSP | **C++ Personalizado** | EQ biquad de 10 bandas con filtros peaking, shelf y pass |
+| Resampleador Sinc | **C++ Personalizado** | Resampleo sinc con tabla lookup precomputada para SR mismatch y crossfade |
+| Cadena de Efectos | **C++ Personalizado** | Compresor post-EQ (threshold/ratio/knee/attack/release) + reverb (4 comb + 2 all-pass) |
+| Limiter | **C++ Personalizado** | Limiter hard-clipper post-mecla con threshold configurable |
 | Codecs Media | **AMediaCodec** (NDK) | Reproducción MP3, AAC, OGG |
 | Streaming URL | **AMediaExtractor** (NDK) | Streaming HTTP de audio (API 29+) |
 | Navegación archivos | **file_picker** | Importación de archivos via SAF |
@@ -265,6 +292,7 @@ int dur = AudioEngine.getDuration();
 | `AudioEngine.instance` | Acceso al singleton |
 | `masterVolume` | Obtener/ajustar volumen maestro (0.0–1.0) |
 | `tracks` | Lista inmutable de 4 [`TrackPlayer`] |
+| `crossfadeMs` | Obtener/ajustar duración del crossfade (0–5000ms, default 3000ms) |
 | `startPcmStream(interval:)` | Iniciar stream PCM para visualización |
 | `stopPcmStream()` | Detener stream PCM |
 | `startAudio(ruta)` | *(legacy)* Iniciar reproducción local en pista 0 |
@@ -272,6 +300,11 @@ int dur = AudioEngine.getDuration();
 | `stop()` / `pause()` / `resume()` / `seek(ms)` | *(legacy)* Controles de transporte en pista 0 |
 | `setEqBand(i, type, freq, gain, q)` | Configurar banda EQ (global) |
 | `setEqBypass(bool)` / `resetEq()` | Controles globales de EQ |
+| `setLimiter(thresholdDb)` | Configurar limiter post-mecla (-60 a 0 dB) |
+| `setLimiterBypass(bool)` | Bypass/activar limiter |
+| `setCompressor(...)` | Configurar compresor post-EQ |
+| `setReverb(...)` | Configurar reverb post-EQ |
+| `setEffectChain(list)` | Establecer cadena de efectos post-EQ |
 
 ### `TrackPlayer` — Control por pista
 
@@ -280,11 +313,13 @@ int dur = AudioEngine.getDuration();
 | `play(ruta)` | Cargar e iniciar reproducción |
 | `stop()` / `pause()` / `resume()` | Controles de transporte |
 | `seek(Duration)` | Buscar posición |
+| `setNextTrack(ruta, {name})` | Establecer siguiente track para transición gapless |
 | `volume` / `pan` | Volumen por pista (0–1) / paneo (-1–1) |
 | `state` | [`PlaybackState`] actual |
 | `position` / `duration` | Posición actual / duración total |
 | `onStateChanged` | Stream de cambios de [`PlaybackState`] |
 | `onPositionChanged` | Stream de actualizaciones de posición [`Duration`] |
+| `onGaplessFailed` | Stream emitido cuando falla la transición gapless |
 | `dispose()` | Liberar recursos |
 
 ### `PlaybackState` enumeración
@@ -340,6 +375,18 @@ Arc Audio Engine enlaza estáticamente `libFLAC` (Xiph.Org), que está bajo lice
 - Dado que el plugin enlaza FLAC **estáticamente** en `libaudio_engine.so`, tu app debe permitir a los usuarios **reemplazar** la librería FLAC con una versión modificada
 - En la práctica, debes incluir un aviso (ej. en la pantalla "Acerca de" o "Licencias") creditando a Xiph.Org e indicando que FLAC está disponible bajo LGPL
 - La forma más sencilla de cumplir es usar el [`LicenseRegistry`](https://api.flutter.dev/flutter/foundation/LicenseRegistry-class.html) de Flutter o agregar una página de avisos de código abierto
+
+### Cómo funciona la reproducción gapless?
+
+Cuando llamas a `track.setNextTrack(ruta)` antes de que termine el track actual, el motor pre-decodifica el siguiente track en un thread en segundo plano. Cuando el track actual llega al final (o a la zona de crossfade), trans automáticamente al siguiente con un crossfade configurable (default 3s, potencia igual estilo Spotify). Puedes poner `AudioEngine.crossfadeMs = 0` para gapless puro (sin crossfade).
+
+### Qué pasa cuando los tracks tienen frecuencias de muestreo distintas?
+
+El motor detecta cuando el siguiente track tiene una frecuencia de muestreo distinta al stream de AAudio (ej. track de 48kHz reproduciendo en stream de 44.1kHz). Durante el crossfade, usa un resampleo sinc en tiempo real con tabla lookup precomputada para resamplear el track entrante sobre la marcha. Maneja cualquier combinación de frecuencias transparentemente — sin intervención del usuario.
+
+### Cómo funciona la cadena de efectos?
+
+El pipeline de audio procesa en este orden: ring buffer → resampleo sinc (si está activo) → EQ de 10 bandas → cadena de efectos (compresor, reverb) → limiter → salida. Puedes configurar cada componente individualmente via la API Dart o establecer toda la cadena con `AudioEngine.setEffectChain()`.
 
 ### Cómo agrego archivos de audio desde mi dispositivo?
 

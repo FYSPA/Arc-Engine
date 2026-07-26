@@ -30,6 +30,10 @@
 | **P0.4** | **Limiter post-mezcla** — Hard-clipper con threshold configurable (-60 a 0 dB), aplicado después de effects chain |
 | **P0.1** | **EQ Q ajustable por banda** — Parámetro Q configurable por banda con filtros biquad |
 | **P0.2** | **EQ tipo de filtro por banda** — Peak/LowShelf/HighShelf/LowPass/HighPass por banda |
+| **P2.2** | **Gapless playback** — Transiciones sin silencio vía `setNextTrack()` + crossfade configurable (0–5s) |
+| **P2.4** | **Compresor** — Threshold, ratio, knee, attack, release, makeup gain |
+| **P2.4** | **Reverb** — 4 comb + 2 all-pass con pre-delay |
+| **V2.1** | **Sample Rate Conversion** — Resampleo sinc en tiempo real con tabla lookup (256 bins × 17 taps) |
 
 ### P0 — Alta prioridad
 | # | Área | Mejora | Archivos clave |
@@ -46,9 +50,6 @@
 ### P2 — Baja prioridad
 | # | Área | Mejora | Archivos clave |
 |---|------|--------|----------------|
-| P2.2 | **Pipeline** | Gap-less playback (encadenar tracks sin silencio) | `engine_threads.cpp` (flac_gapless, seek-to-end), `track_player.dart` (gapLessVersion polling) |
-| P2.4 | **DSP** | Compresor (threshold, ratio, knee, attack, release, makeup) | `compressor.cpp`, `audio_mixer.dart:257-316` |
-| P2.4 | **DSP** | Reverb (4 comb + 2 all-pass, pre-delay) | `reverb.cpp`, `audio_mixer.dart:318-370` |
 
 ### Configuración de publicación
 - **Paquete renombrado:** `audio_engine` → `arc_engine`
@@ -85,7 +86,6 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| V2.1 | **Pipeline** | Sample Rate Conversion (SRC) | Resampleo de tracks a la frecuencia del stream de salida |
 | V2.2 | **Pipeline** | ReplayGain | Normalización de loudness (EBU R128) entre pistas |
 | V2.3 | **Pipeline** | Dithering | Noise shaping al convertir a 16-bit si se exporta a WAV |
 | V2.4 | **Grabación** | Loopback / Mezcla a WAV | Renderizar todas las pistas a un archivo WAV en disco |
