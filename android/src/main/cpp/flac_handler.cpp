@@ -15,7 +15,9 @@
 #include "common.h"
 
 #include <cstring>
+#include <sys/stat.h>
 #include <aaudio/AAudio.h>
+#include <FLAC/metadata.h>
 
 // ─── FLAC callbacks ──────────────────────────────────────────────────────────
 
@@ -219,5 +221,77 @@ int32_t play_flac(const char* path) {
     closeAAudioStream(state.stream);
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
+    return 0;
+}
+
+// ─── get_flac_metadata ──────────────────────────────────────────────────────
+
+static void copyVorbisComment(const FLAC__StreamMetadata *tags,
+                              const char *key, char *out, int32_t outSize) {
+    out[0] = '\0';
+    int idx = FLAC__metadata_object_vorbiscomment_find_entry_from(tags, 0, key);
+    if (idx < 0) return;
+    char *name = nullptr;
+    char *value = nullptr;
+    if (FLAC__metadata_object_vorbiscomment_entry_to_name_value_pair(
+            tags->data.vorbis_comment.comments[idx], &name, &value)) {
+        if (value) {
+            strncpy(out, value, outSize - 1);
+            out[outSize - 1] = '\0';
+        }
+    }
+    if (name) free(name);
+    if (value) free(value);
+}
+
+int32_t get_flac_metadata(const char* path, FlacMetadata* out) {
+    memset(out, 0, sizeof(FlacMetadata));
+
+    // ── Technical properties via streaminfo ────────────────────────────────
+    FLAC__StreamMetadata si;
+    memset(&si, 0, sizeof(si));
+    if (!FLAC__metadata_get_streaminfo(path, &si)) return -2;
+
+    out->sampleRate = (int32_t)si.data.stream_info.sample_rate;
+    out->channels = (int32_t)si.data.stream_info.channels;
+    out->bitDepth = (int32_t)si.data.stream_info.bits_per_sample;
+    out->totalSamples = (int64_t)si.data.stream_info.total_samples;
+    if (out->sampleRate > 0)
+        out->durationMs = (int32_t)((out->totalSamples * 1000) / out->sampleRate);
+
+    // ── Bitrate from file size / duration ──────────────────────────────────
+    struct stat st_file;
+    if (stat(path, &st_file) == 0 && out->durationMs > 0) {
+        double durSec = (double)out->durationMs / 1000.0;
+        out->bitrate = (int32_t)((st_file.st_size * 8.0) / durSec / 1000.0);
+    }
+
+    // ── Vorbis Comments (title, artist, album, trackNumber, year) ─────────
+    FLAC__StreamMetadata *tags = nullptr;
+    if (FLAC__metadata_get_tags(path, &tags) && tags) {
+        copyVorbisComment(tags, "TITLE", out->title, sizeof(out->title));
+        copyVorbisComment(tags, "ARTIST", out->artist, sizeof(out->artist));
+        copyVorbisComment(tags, "ALBUM", out->album, sizeof(out->album));
+
+        char buf[32];
+        copyVorbisComment(tags, "TRACKNUMBER", buf, sizeof(buf));
+        if (buf[0]) out->trackNumber = atoi(buf);
+
+        copyVorbisComment(tags, "DATE", buf, sizeof(buf));
+        if (buf[0]) out->year = atoi(buf);
+
+        FLAC__metadata_object_delete(tags);
+    }
+
+    // ── CUESHEET (ISRC) ───────────────────────────────────────────────────
+    FLAC__StreamMetadata *cue = nullptr;
+    if (FLAC__metadata_get_cuesheet(path, &cue) && cue) {
+        if (cue->data.cue_sheet.num_tracks > 0) {
+            strncpy(out->isrc, cue->data.cue_sheet.tracks[0].isrc, 12);
+            out->isrc[12] = '\0';
+        }
+        FLAC__metadata_object_delete(cue);
+    }
+
     return 0;
 }

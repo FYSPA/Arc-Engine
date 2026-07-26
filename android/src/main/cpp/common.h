@@ -27,6 +27,24 @@ struct FlacInfo {
     int32_t durationMs;
 };
 
+struct FlacMetadata {
+    // Technical properties
+    int32_t sampleRate;
+    int32_t bitDepth;
+    int32_t channels;
+    int64_t totalSamples;
+    int32_t bitrate;          // kbps
+
+    // Descriptive tags
+    char title[256];
+    char artist[256];
+    char album[256];
+    char isrc[16];
+    int32_t trackNumber;
+    int32_t year;
+    int32_t durationMs;
+};
+
 enum class AudioFormat { NONE, FLAC, WAV, MEDIA };
 
 #define FADE_FRAMES 256  // ~5.3ms fade at 48kHz for click-free stop/seek

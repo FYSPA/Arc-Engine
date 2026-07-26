@@ -125,6 +125,9 @@ class FakeFfi implements FfiInterface {
   int getFlacInfo(Pointer<Utf8> path, Pointer<FlacInfo> info) => -1;
 
   @override
+  int getFlacMetadata(Pointer<Utf8> path, Pointer<FlacMetadata> out) => -1;
+
+  @override
   int playFlac(Pointer<Utf8> path) => -1;
 
   @override

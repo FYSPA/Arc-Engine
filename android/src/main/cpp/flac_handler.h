@@ -48,5 +48,6 @@ void predecodeFlac(TrackState &trk, const char *path);
 
 extern "C" {
 EXPORT int32_t get_flac_info(const char* path, FlacInfo* outInfo);
+EXPORT int32_t get_flac_metadata(const char* path, FlacMetadata* out);
 EXPORT int32_t play_flac(const char* path);
 }

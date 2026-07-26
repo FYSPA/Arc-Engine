@@ -26,7 +26,8 @@
 /// ```
 library arc_engine;
 
-export 'src/ffi_bindings.dart' show FlacInfo;
+export 'src/ffi_bindings.dart' show FlacInfo, FlacMetadata;
+export 'src/flac_metadata.dart' show FlacMetadataData;
 export 'src/track_player.dart' show TrackPlayer, PlaybackState;
 export 'src/audio_mixer.dart' show AudioEngine;
 export 'src/audio_focus.dart' show AudioFocusEvent;

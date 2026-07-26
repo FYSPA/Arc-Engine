@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
-import 'ffi_bindings.dart' show FfiInterface, FlacInfo;
+import 'ffi_bindings.dart' show FfiInterface, FlacInfo, FlacMetadata;
+import 'flac_metadata.dart';
 import 'track_player.dart';
 import 'pcm_stream.dart';
 import 'audio_focus.dart' show AudioFocus, AudioFocusEvent;
@@ -235,6 +236,44 @@ class AudioEngine {
     } finally {
       calloc.free(pathPtr);
       calloc.free(infoPtr);
+    }
+  }
+
+  /// Returns full FLAC metadata (tags + technical properties) for [path].
+  ///
+  /// Works without creating a playback track — useful for preloading
+  /// metadata in a library UI. Returns `null` if the file is not FLAC
+  /// or cannot be read.
+  static Future<FlacMetadataData?> getFlacMetadata(String path) async {
+    final ffi = FfiInterface.instance;
+    final pathPtr = path.toNativeUtf8();
+    final metaPtr = calloc<FlacMetadata>();
+    try {
+      final result = ffi.getFlacMetadata(pathPtr, metaPtr);
+      if (result != 0) return null;
+      final m = metaPtr.ref;
+      final title = arrayToString(m.title);
+      final artist = arrayToString(m.artist);
+      final album = arrayToString(m.album);
+      final isrc = arrayToString(m.isrc);
+      return FlacMetadataData(
+        sampleRate: m.sampleRate,
+        bitDepth: m.bitDepth,
+        channels: m.channels,
+        totalSamples: m.totalSamples,
+        bitrate: m.bitrate,
+        title: title,
+        titleClean: computeTitleClean(title),
+        artist: artist,
+        album: album,
+        isrc: isrc,
+        trackNumber: m.trackNumber != 0 ? m.trackNumber : null,
+        year: m.year != 0 ? m.year : null,
+        duration: Duration(milliseconds: m.durationMs),
+      );
+    } finally {
+      calloc.free(pathPtr);
+      calloc.free(metaPtr);
     }
   }
 

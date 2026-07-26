@@ -19,7 +19,8 @@ import 'dart:async';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
-import 'ffi_bindings.dart' show FfiInterface;
+import 'ffi_bindings.dart' show FfiInterface, FlacMetadata;
+import 'flac_metadata.dart';
 
 /// Playback state for a [TrackPlayer].
 ///
@@ -51,6 +52,7 @@ class TrackPlayer {
   String _currentName = '';
   String _nextName = '';
   int _lastGapLessVersion = 0;
+  FlacMetadataData? _metadata;
 
   final StreamController<PlaybackState> _stateCtrl =
       StreamController<PlaybackState>.broadcast();
@@ -97,6 +99,42 @@ class TrackPlayer {
 
   /// Whether this track loops (repeats from beginning when finished).
   bool get loop => _loop;
+
+  /// Full FLAC metadata for the current track (null if not loaded or not FLAC).
+  FlacMetadataData? get metadata => _metadata;
+
+  /// Title from Vorbis Comments. Empty string if not available.
+  String get title => _metadata?.title ?? '';
+
+  /// Title without numeric prefixes (e.g. "01 - Song" → "Song").
+  String get titleClean => _metadata?.titleClean ?? '';
+
+  /// Artist from Vorbis Comments. Empty string if not available.
+  String get artist => _metadata?.artist ?? '';
+
+  /// Album from Vorbis Comments. Empty string if not available.
+  String get album => _metadata?.album ?? '';
+
+  /// ISRC from CUESHEET. Empty string if not available.
+  String get isrc => _metadata?.isrc ?? '';
+
+  /// Track number from Vorbis Comments. Null if not available.
+  int? get trackNumber => _metadata?.trackNumber;
+
+  /// Release year from Vorbis Comments. Null if not available.
+  int? get year => _metadata?.year;
+
+  /// Sample rate in Hz (e.g. 44100, 48000, 96000). 0 if not loaded.
+  int get sampleRate => _metadata?.sampleRate ?? 0;
+
+  /// Bit depth (16, 24, 32). 0 if not loaded.
+  int get bitDepth => _metadata?.bitDepth ?? 0;
+
+  /// Number of channels. 0 if not loaded.
+  int get channels => _metadata?.channels ?? 0;
+
+  /// Approximate bitrate in kbps. 0 if not loaded.
+  int get bitrate => _metadata?.bitrate ?? 0;
 
   /// Sets per-track volume. Clamped to 0.0–1.0.
   set volume(double v) {
@@ -157,6 +195,7 @@ class TrackPlayer {
   /// Stops any existing playback first. Returns 0 on success, negative on error.
   int play(String path) {
     stop();
+    _loadMetadata(path);
     final pathPtr = path.toNativeUtf8();
     try {
       final result = _ffi.trackPlay(index, pathPtr);
@@ -171,6 +210,45 @@ class TrackPlayer {
       return result;
     } finally {
       calloc.free(pathPtr);
+    }
+  }
+
+  void _loadMetadata(String path) {
+    if (!path.toLowerCase().endsWith('.flac')) {
+      _metadata = null;
+      return;
+    }
+    final pathPtr = path.toNativeUtf8();
+    final metaPtr = calloc<FlacMetadata>();
+    try {
+      final result = _ffi.getFlacMetadata(pathPtr, metaPtr);
+      if (result != 0) {
+        _metadata = null;
+        return;
+      }
+      final m = metaPtr.ref;
+      final t = arrayToString(m.title);
+      final a = arrayToString(m.artist);
+      final al = arrayToString(m.album);
+      final isrc = arrayToString(m.isrc);
+      _metadata = FlacMetadataData(
+        sampleRate: m.sampleRate,
+        bitDepth: m.bitDepth,
+        channels: m.channels,
+        totalSamples: m.totalSamples,
+        bitrate: m.bitrate,
+        title: t,
+        titleClean: computeTitleClean(t),
+        artist: a,
+        album: al,
+        isrc: isrc,
+        trackNumber: m.trackNumber != 0 ? m.trackNumber : null,
+        year: m.year != 0 ? m.year : null,
+        duration: Duration(milliseconds: m.durationMs),
+      );
+    } finally {
+      calloc.free(pathPtr);
+      calloc.free(metaPtr);
     }
   }
 

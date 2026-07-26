@@ -44,6 +44,48 @@ final class FlacInfo extends Struct {
   external int durationMs;
 }
 
+/// Native FLAC full metadata struct.
+///
+/// Returned by [FfiInterface.getFlacMetadata], mirrors the C `FlacMetadata`
+/// struct in `common.h`. Contains technical properties + Vorbis Comment tags.
+final class FlacMetadata extends Struct {
+  @Int32()
+  external int sampleRate;
+
+  @Int32()
+  external int bitDepth;
+
+  @Int32()
+  external int channels;
+
+  @Int64()
+  external int totalSamples;
+
+  @Int32()
+  external int bitrate;
+
+  @Array(256)
+  external Array<Uint8> title;
+
+  @Array(256)
+  external Array<Uint8> artist;
+
+  @Array(256)
+  external Array<Uint8> album;
+
+  @Array(16)
+  external Array<Uint8> isrc;
+
+  @Int32()
+  external int trackNumber;
+
+  @Int32()
+  external int year;
+
+  @Int32()
+  external int durationMs;
+}
+
 /// Interface for FFI-native operations.
 ///
 /// Tests can implement this with fake behavior to avoid needing the actual
@@ -52,6 +94,7 @@ final class FlacInfo extends Struct {
 /// All methods map directly to C EXPORT symbols in libaudio_engine.so.
 abstract class FfiInterface {
   int getFlacInfo(Pointer<Utf8> path, Pointer<FlacInfo> info);
+  int getFlacMetadata(Pointer<Utf8> path, Pointer<FlacMetadata> out);
   int playFlac(Pointer<Utf8> path);
   int playAudio(Pointer<Utf8> path);
   int playWav(Pointer<Utf8> path);
@@ -142,6 +185,13 @@ final class FfiBindings implements FfiInterface {
   late final _getFlacInfo = _lib.lookupFunction<
       Int32 Function(Pointer<Utf8>, Pointer<FlacInfo>),
       int Function(Pointer<Utf8>, Pointer<FlacInfo>)>('get_flac_info');
+
+  @override
+  int getFlacMetadata(Pointer<Utf8> path, Pointer<FlacMetadata> out) =>
+      _getFlacMetadata(path, out);
+  late final _getFlacMetadata = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<FlacMetadata>),
+      int Function(Pointer<Utf8>, Pointer<FlacMetadata>)>('get_flac_metadata');
 
   @override
   int playFlac(Pointer<Utf8> path) => _playFlac(path);
