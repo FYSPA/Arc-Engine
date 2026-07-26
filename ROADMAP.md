@@ -34,22 +34,7 @@
 | **P2.4** | **Compresor** — Threshold, ratio, knee, attack, release, makeup gain |
 | **P2.4** | **Reverb** — 4 comb + 2 all-pass con pre-delay |
 | **V2.1** | **Sample Rate Conversion** — Resampleo sinc en tiempo real con tabla lookup (256 bins × 17 taps) |
-
-### P0 — Alta prioridad
-| # | Área | Mejora | Archivos clave |
-|---|------|--------|----------------|
-
-### P1 — Media prioridad
-| # | Área | Mejora | Archivos clave |
-|---|------|--------|----------------|
-| P1.1 | **EQ** | Presets (Flat/Rock/Pop/Jazz/Classical/Custom) | `eq_dialog.dart:99-107` |
-| P1.2 | **EQ** | Curva de respuesta frecuencia vs ganancia | `eq_dialog.dart:631-773` (CustomPaint, 200 puntos) |
-| P1.3 | **Mixer** | Fade-out en stop (256 samples, 4 threads) | `engine_threads.cpp:77-86` |
-| P1.5 | **UI** | Waveform por track (ring buffer PCM) | `home_screen.dart` (WaveformWidget en cada track card) |
-
-### P2 — Baja prioridad
-| # | Área | Mejora | Archivos clave |
-|---|------|--------|----------------|
+| **—** | **FLAC Metadata Export** — Title, artist, album, ISRC, trackNumber, year, bitrate, sampleRate, bitDepth via Vorbis Comments + CUESHEET |
 
 ### Configuración de publicación
 - **Paquete renombrado:** `audio_engine` → `arc_engine`
@@ -66,7 +51,11 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
+| P1.1 | **EQ** | Presets (Flat/Rock/Pop/Jazz/Classical/Custom) | `eq_dialog.dart:99-107` |
+| P1.2 | **EQ** | Curva de respuesta frecuencia vs ganancia | `eq_dialog.dart:631-773` (CustomPaint, 200 puntos) |
+| P1.3 | **Mixer** | Fade-out en stop (256 samples, 4 threads) | `engine_threads.cpp:77-86` |
 | P1.4 | **UI** | Drag & drop reorder | 🚫 Saltado — no se implementará |
+| P1.5 | **UI** | Waveform por track (ring buffer PCM) | `home_screen.dart` (WaveformWidget en cada track card) |
 
 ### P2 — Baja prioridad
 
