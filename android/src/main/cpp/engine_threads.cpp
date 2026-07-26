@@ -20,6 +20,7 @@
 #include "limiter.h"
 
 #include <cstdio>
+#include <vector>
 #include <cstring>
 #include <thread>
 #include <chrono>
@@ -198,7 +199,7 @@ void wavPlaybackThread(int ti) {
         int32_t chunk = rem < blockSize ? rem : blockSize;
         int32_t base = (int32_t)trk.writtenFrames;
 
-        float floatBuf[chunk * ch];
+        std::vector<float> floatBuf(chunk * ch);
         for (int32_t i = 0; i < chunk; i++) {
             for (int32_t c = 0; c < ch; c++) {
                 int32_t off = (base + i) * fs;
@@ -214,9 +215,9 @@ void wavPlaybackThread(int ti) {
         }
 
         if (trk.ringBuf) {
-            updateFadeHistory(trk, floatBuf, chunk, ch);
-            applyFadeIn(trk, floatBuf, chunk, ch);
-            int32_t pushed = trk.ringBuf->push(floatBuf, chunk, ch);
+            updateFadeHistory(trk, floatBuf.data(), chunk, ch);
+            applyFadeIn(trk, floatBuf.data(), chunk, ch);
+            int32_t pushed = trk.ringBuf->push(floatBuf.data(), chunk, ch);
             trk.writtenFrames += pushed;
             if (pushed > 0) {
                 trk.lastFrame[0] = floatBuf[(pushed - 1) * ch];
@@ -224,7 +225,7 @@ void wavPlaybackThread(int ti) {
             }
         }
         if (trk.pcmRingBuf) {
-            trk.pcmRingBuf->push(floatBuf, chunk, ch);
+            trk.pcmRingBuf->push(floatBuf.data(), chunk, ch);
         }
     }
 

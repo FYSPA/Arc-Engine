@@ -10,6 +10,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <vector>
 #include <math.h>
 #include <cstring>
 #include <android/log.h>
@@ -122,11 +123,11 @@ static inline void resampleSincStream(float *out, int32_t &outFrames,
 
     // Build extended input: [overlap | current block]
     int32_t extLen = overlapCount + inFrames;
-    float ext[extLen * channels];
+    std::vector<float> ext(extLen * channels);
     if (overlapCount > 0) {
-        memcpy(ext, overlap, overlapCount * channels * sizeof(float));
+        memcpy(ext.data(), overlap, overlapCount * channels * sizeof(float));
     }
-    memcpy(ext + overlapCount * channels, in, inFrames * channels * sizeof(float));
+    memcpy(ext.data() + overlapCount * channels, in, inFrames * channels * sizeof(float));
 
     // Compute output range: skip frames that correspond to the overlap region
     int32_t skipOutput = (overlapCount > 0) ? (int32_t)(overlapCount * ratio + 0.5) : 0;

@@ -12,6 +12,7 @@
 #include "common.h"
 
 #include <cstdio>
+#include <vector>
 #include <cstring>
 #include <aaudio/AAudio.h>
 
@@ -155,7 +156,7 @@ int32_t play_wav(const char* path) {
 
     while (written < totalFrames) {
         int32_t rem = (totalFrames - written) < blockSize ? (totalFrames - written) : blockSize;
-        float floatBuf[rem * channels];
+        std::vector<float> floatBuf(rem * channels);
 
         for (int32_t i = 0; i < rem; i++) {
             for (int32_t ch = 0; ch < channels; ch++) {
@@ -189,7 +190,7 @@ int32_t play_wav(const char* path) {
             }
         }
 
-        if (writeFrames(stream, floatBuf, rem, channels) != 0) break;
+        if (writeFrames(stream, floatBuf.data(), rem, channels) != 0) break;
         written += rem;
     }
 

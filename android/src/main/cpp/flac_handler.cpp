@@ -15,6 +15,7 @@
 #include "common.h"
 
 #include <cstring>
+#include <vector>
 #include <sys/stat.h>
 #include <aaudio/AAudio.h>
 #include <FLAC/metadata.h>
@@ -55,12 +56,12 @@ FLAC__StreamDecoderWriteStatus playWriteCallback(
     const int32_t channels = state->info.channels;
     const float scale = 1.0f / (float)(1LL << (state->info.bitsPerSample - 1));
 
-    float floatBuf[frames * channels];
+    std::vector<float> floatBuf(frames * channels);
     for (int32_t i = 0; i < frames; i++)
         for (int32_t ch = 0; ch < channels; ch++)
             floatBuf[i * channels + ch] = buffer[ch][i] * scale;
 
-    return writeFrames(state->stream, floatBuf, frames, channels) == 0
+    return writeFrames(state->stream, floatBuf.data(), frames, channels) == 0
         ? FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE
         : FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
 }
@@ -79,7 +80,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     const int32_t channels = state->info.channels;
     const float scale = 1.0f / (float)(1LL << (state->info.bitsPerSample - 1));
 
-    float floatBuf[frames * channels];
+    std::vector<float> floatBuf(frames * channels);
     for (int32_t i = 0; i < frames; i++)
         for (int32_t ch = 0; ch < channels; ch++) {
             float s = buffer[ch][i] * scale;
@@ -98,7 +99,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             int32_t outFrames = totalOut - skipOutput;
             if (outFrames > 0 && outFrames <= frames * 2) {
                 std::vector<float> resampled(outFrames * channels);
-                resampleSincStream(resampled.data(), outFrames, floatBuf, frames, channels, ratio,
+                resampleSincStream(resampled.data(), outFrames, floatBuf.data(), frames, channels, ratio,
                                    trk.resampleOverlap, trk.resampleOverlapCount);
                 for (int32_t i = 0; i < outFrames * channels; i++) {
                     if (resampled[i] > 1.0f) resampled[i] = 1.0f;
@@ -111,15 +112,15 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 if (channels > 1) trk.lastFrame[1] = resampled[(outFrames - 1) * channels + 1];
             }
         } else {
-            updateFadeHistory(trk, floatBuf, frames, channels);
-            applyFadeIn(trk, floatBuf, frames, channels);
-            trk.ringBuf->push(floatBuf, frames, channels);
+            updateFadeHistory(trk, floatBuf.data(), frames, channels);
+            applyFadeIn(trk, floatBuf.data(), frames, channels);
+            trk.ringBuf->push(floatBuf.data(), frames, channels);
             trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
         }
     }
     if (trk.pcmRingBuf) {
-        trk.pcmRingBuf->push(floatBuf, frames, channels);
+        trk.pcmRingBuf->push(floatBuf.data(), frames, channels);
     }
 
     trk.writtenFrames += frames;
