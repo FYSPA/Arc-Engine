@@ -199,3 +199,115 @@ int32_t play_wav(const char* path) {
     LOGI("WAV playback finished: %d frames", written);
     return 0;
 }
+
+// ─── analyzeWavWaveform ──────────────────────────────────────────────────
+
+int32_t analyzeWavWaveform(const char *path, int32_t numBars, float *outPeaks) {
+    if (numBars <= 0 || numBars > 512 || !outPeaks) return -1;
+    memset(outPeaks, 0, numBars * sizeof(float));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -2;
+
+    uint8_t riff[12];
+    if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) {
+        fclose(f); return -3;
+    }
+
+    int32_t channels = 0, bitsPerSample = 0;
+    uint32_t dataSize = 0;
+    uint8_t *pcmData = nullptr;
+    bool fmtFound = false;
+
+    uint8_t chunk[8];
+    while (fread(chunk, 1, 8, f) == 8) {
+        uint32_t cs = readInt32LE(chunk + 4);
+        if (memcmp(chunk, "fmt ", 4) == 0) {
+            uint8_t fmt[16];
+            if (cs < 16 || fread(fmt, 1, 16, f) != 16) { fclose(f); return -4; }
+            if ((fmt[0] | (fmt[1] << 8)) != 1) { fclose(f); return -5; }
+            channels = fmt[2] | (fmt[3] << 8);
+            bitsPerSample = readInt16LE(fmt + 14);
+            fmtFound = true;
+            if (cs > 16) fseek(f, cs - 16, SEEK_CUR);
+        } else if (memcmp(chunk, "data", 4) == 0) {
+            if (!fmtFound) { fclose(f); return -6; }
+            dataSize = cs;
+            pcmData = new uint8_t[cs];
+            if (fread(pcmData, 1, cs, f) != cs) { delete[] pcmData; fclose(f); return -7; }
+            break;
+        } else {
+            fseek(f, cs, SEEK_CUR);
+        }
+    }
+    fclose(f);
+
+    if (!pcmData || dataSize == 0 || channels == 0) return -8;
+
+    int32_t bytesPerSample = bitsPerSample / 8;
+    int32_t frameSize = channels * bytesPerSample;
+    int64_t totalFrames = dataSize / frameSize;
+    int64_t framesPerBar = totalFrames / numBars;
+    if (framesPerBar == 0) { delete[] pcmData; return -9; }
+
+    float scale = 1.0f / (float)(1LL << (bitsPerSample - 1));
+
+    for (int32_t bar = 0; bar < numBars; bar++) {
+        int64_t startFrame = (int64_t)bar * framesPerBar;
+        int64_t endFrame = startFrame + framesPerBar;
+        if (endFrame > totalFrames) endFrame = totalFrames;
+
+        float maxPeak = 0.0f;
+        for (int64_t frame = startFrame; frame < endFrame; frame++) {
+            uint32_t offset = (uint32_t)(frame * frameSize);
+            for (int c = 0; c < channels; c++) {
+                float sample = 0.0f;
+                switch (bitsPerSample) {
+                    case 8:
+                        sample = (pcmData[offset + c] - 128) / 128.0f;
+                        break;
+                    case 16: {
+                        int16_t s = pcmData[offset + c * 2] | (pcmData[offset + c * 2 + 1] << 8);
+                        sample = s / 32768.0f;
+                        break;
+                    }
+                    case 24: {
+                        int32_t s = pcmData[offset + c * 3]
+                                  | (pcmData[offset + c * 3 + 1] << 8)
+                                  | (pcmData[offset + c * 3 + 2] << 16);
+                        if (s & 0x800000) s |= ~0xFFFFFF;
+                        sample = s / 8388608.0f;
+                        break;
+                    }
+                    case 32: {
+                        int32_t s = readInt32LE(pcmData + offset + c * 4);
+                        sample = s / 2147483648.0f;
+                        break;
+                    }
+                }
+                float absSample = fabsf(sample);
+                if (absSample > maxPeak) maxPeak = absSample;
+            }
+        }
+        outPeaks[bar] = maxPeak;
+    }
+
+    delete[] pcmData;
+
+    // Normalize: find global max and scale to 1.0
+    float globalMax = 0.0f;
+    for (int32_t i = 0; i < numBars; i++) {
+        if (outPeaks[i] > globalMax) globalMax = outPeaks[i];
+    }
+    if (globalMax > 0.0f && globalMax < 1.0f) {
+        float invMax = 1.0f / globalMax;
+        for (int32_t i = 0; i < numBars; i++)
+            outPeaks[i] *= invMax;
+    }
+
+    for (int32_t i = 0; i < numBars; i++) {
+        if (outPeaks[i] < 0.02f) outPeaks[i] = 0.02f;
+    }
+
+    return 0;
+}

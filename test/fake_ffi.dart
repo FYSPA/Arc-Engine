@@ -283,4 +283,12 @@ class FakeFfi implements FfiInterface {
     }
     return count ~/ 2;
   }
+
+  @override
+  int trackAnalyzeWaveform(int index, int numBars, Pointer<Float> outPeaks) {
+    for (int i = 0; i < numBars; i++) {
+      outPeaks[i] = 0.5;
+    }
+    return 0;
+  }
 }

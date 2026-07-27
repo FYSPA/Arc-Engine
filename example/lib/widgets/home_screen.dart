@@ -44,6 +44,8 @@ class _TrackUiState {
   bool solo = false;
   bool loop = false;
   List<double> waveformSamples = [];
+  List<double> waveformPeaks = [];
+  bool waveformLoading = false;
   StreamSubscription<List<double>>? _waveformSub;
 
   StreamSubscription<String>? _nameSub;
@@ -271,7 +273,10 @@ class _HomeScreenState extends State<HomeScreen> {
           _tracks[existing].stopWaveformStream();
           _tracks[existing].label = label;
           _tracks[existing].running = true;
+          _tracks[existing].position = 0;
+          _tracks[existing].duration = 0;
           _tracks[existing].sliderValue = 0.0;
+          _tracks[existing].waveformPeaks = [];
         } else {
           _tracks.add(_TrackUiState(player, label)..running = true);
         }
@@ -285,6 +290,16 @@ class _HomeScreenState extends State<HomeScreen> {
         wt.startWaveformStream(() {
           if (mounted) setState(() {});
         });
+        // Analyze static waveform for seek visualization
+        if (wt.waveformPeaks.isEmpty) {
+          final peaks = player.analyzeWaveform(numBars: 500);
+          if (mounted && peaks.isNotEmpty) {
+            setState(() {
+              wt.waveformPeaks = peaks;
+              wt.waveformLoading = false;
+            });
+          }
+        }
       } else {
         _status = '$label: start error $result';
       }
@@ -338,7 +353,21 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint('_reQueueNext[$trackIndex]: t.isEmpty ($_tracks)');
       return;
     }
-    final label = t.first.label;
+    final trackUi = t.first;
+    // Reset waveform and position for the new song (gapless transition)
+    trackUi.waveformPeaks = [];
+    trackUi.position = 0;
+    trackUi.duration = 0;
+    trackUi.sliderValue = 0.0;
+    // Re-analyze waveform for the new song
+    final player = trackUi.player;
+    final peaks = player.analyzeWaveform(numBars: 500);
+    if (mounted && peaks.isNotEmpty) {
+      setState(() {
+        trackUi.waveformPeaks = peaks;
+      });
+    }
+    final label = trackUi.label;
     final idx = _audioFiles.indexWhere((e) => _fileName(e.path) == label);
     debugPrint(
         '_reQueueNext[$trackIndex]: label="$label" idx=$idx audioFiles=${_audioFiles.length}');
@@ -883,25 +912,56 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     Expanded(
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          trackHeight: 3,
-                          thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6),
-                          overlayShape:
-                              const RoundSliderOverlayShape(overlayRadius: 12),
-                        ),
-                        child: Slider(
-                          value: t.sliderValue,
-                          min: 0.0,
-                          max: t.duration > 0 ? t.duration.toDouble() : 1.0,
-                          onChanged: (v) => setState(() => t.sliderValue = v),
-                          onChangeEnd: (v) {
-                            t.player.seek(Duration(milliseconds: v.toInt()));
-                            setState(() => t.position = v.toInt());
-                          },
-                        ),
-                      ),
+                      child: t.waveformPeaks.isNotEmpty
+                          ? StaticWaveformWidget(
+                              peaks: t.waveformPeaks,
+                              position: t.duration > 0
+                                  ? t.position / t.duration
+                                  : 0.0,
+                              color: t.index == 0
+                                  ? const Color(0xFF7C4DFF)
+                                  : t.index == 1
+                                      ? const Color(0xFF4CAF50)
+                                      : t.index == 2
+                                          ? const Color(0xFFFFA726)
+                                          : const Color(0xFFEF5350),
+                              playedColor: t.index == 0
+                                  ? const Color(0xFF7C4DFF)
+                                  : t.index == 1
+                                      ? const Color(0xFF4CAF50)
+                                      : t.index == 2
+                                          ? const Color(0xFFFFA726)
+                                          : const Color(0xFFEF5350),
+                              height: 48,
+                              onSeek: (pos) {
+                                final ms = (pos * t.duration).toInt();
+                                t.player.seek(Duration(milliseconds: ms));
+                                setState(() => t.position = ms);
+                              },
+                            )
+                          : SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 6),
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 12),
+                              ),
+                              child: Slider(
+                                value: t.sliderValue,
+                                min: 0.0,
+                                max: t.duration > 0
+                                    ? t.duration.toDouble()
+                                    : 1.0,
+                                onChanged: (v) =>
+                                    setState(() => t.sliderValue = v),
+                                onChangeEnd: (v) {
+                                  t.player
+                                      .seek(Duration(milliseconds: v.toInt()));
+                                  setState(() => t.position = v.toInt());
+                                },
+                              ),
+                            ),
                     ),
                     Text(
                       _formatTime(t.duration),

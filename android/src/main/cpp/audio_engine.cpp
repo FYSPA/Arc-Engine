@@ -19,9 +19,12 @@
 #include "reverb.h"
 #include "aaudio_utils.h"
 #include "flac_handler.h"
+#include "wav_handler.h"
 
 #include <cmath>
 #include <cstring>
+#include <string>
+#include <cctype>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
 // Sums all active tracks into a single output buffer with volume/pan per track.
@@ -408,6 +411,29 @@ EXPORT void track_init_dart_api_dl(void* data) {
 EXPORT void track_register_callback(int64_t port) {
     gCtl.dartPort = port;
     LOGI("track_register_callback: port=%lld", (long long)port);
+}
+
+EXPORT int32_t track_analyze_waveform(int32_t index, int32_t numBars, float *outPeaks) {
+    if (index < 0 || index >= MAX_TRACKS) return -1;
+    if (numBars <= 0 || numBars > 512 || !outPeaks) return -1;
+
+    TrackState &trk = gCtl.tracks[index];
+    const char *path = trk.path;
+    if (!path[0]) return -2;
+
+    std::string ext;
+    const char *dot = strrchr(path, '.');
+    if (dot) {
+        ext = dot;
+        for (auto &c : ext) c = (char)tolower(c);
+    }
+
+    if (ext == ".flac") {
+        return analyzeFlacWaveform(path, numBars, outPeaks);
+    } else if (ext == ".wav") {
+        return analyzeWavWaveform(path, numBars, outPeaks);
+    }
+    return -3;  // unsupported format
 }
 
 // ─── EQ control exports ─────────────────────────────────────────────────────

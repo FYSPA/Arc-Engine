@@ -332,6 +332,19 @@ class TrackPlayer {
     _pcmStreamCtrl = null;
   }
 
+  /// Analyzes the audio file and returns peak amplitude per bar for waveform visualization.
+  /// Synchronous FFI call (~50-200ms). Returns empty list if unsupported or fails.
+  List<double> analyzeWaveform({int numBars = 500}) {
+    final buffer = calloc<Float>(numBars);
+    try {
+      final result = _ffi.trackAnalyzeWaveform(index, numBars, buffer);
+      if (result != 0) return [];
+      return List<double>.generate(numBars, (i) => buffer[i]);
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
   /// Stops playback and releases stream controllers.
   ///
   /// After calling [dispose], the [TrackPlayer] should not be used again.
@@ -422,6 +435,11 @@ class TrackPlayer {
           _currentName = _nextName;
           _nextName = '';
           _nameCtrl.add(_currentName);
+          // Update duration from native (totalFrames is updated during gapless)
+          final nativeDurMs = _ffi.trackGetDuration(index);
+          if (nativeDurMs > 0) {
+            _duration = Duration(milliseconds: nativeDurMs);
+          }
         }
       }
       // Detect song end (native push may not arrive for all formats)

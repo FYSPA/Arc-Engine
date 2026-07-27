@@ -27,6 +27,10 @@ FLAC__StreamDecoderWriteStatus infoWriteCallback(
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
+static void noOpMetadataCallback(
+    const FLAC__StreamDecoder*, const FLAC__StreamMetadata*, void*) {
+}
+
 void metadataCallback(
     const FLAC__StreamDecoder*, const FLAC__StreamMetadata *metadata, void *client_data) {
 
@@ -288,7 +292,105 @@ int32_t play_flac(const char* path) {
     return 0;
 }
 
-// ─── get_flac_metadata ──────────────────────────────────────────────────────
+// ─── analyzeFlacWaveform ──────────────────────────────────────────────────
+
+struct WaveformAnalysisCtx {
+    int32_t numBars;
+    int32_t channels;
+    int32_t bitsPerSample;
+    int64_t totalSamples;
+    int64_t samplesPerBar;
+    float *peaks;
+};
+
+static FLAC__StreamDecoderWriteStatus analysisWriteCallback(
+    const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame,
+    const FLAC__int32 *const buffer[], void *client_data) {
+
+    (void)decoder;
+    WaveformAnalysisCtx *ctx = (WaveformAnalysisCtx *)client_data;
+    int32_t frames = (int32_t)frame->header.blocksize;
+    float scale = 1.0f / (float)(1LL << (ctx->bitsPerSample - 1));
+
+    // Calculate global sample offset from frame header
+    int64_t frameStart;
+    if (frame->header.number_type == FLAC__FRAME_NUMBER_TYPE_SAMPLE_NUMBER)
+        frameStart = (int64_t)frame->header.number.sample_number;
+    else
+        frameStart = (int64_t)frame->header.number.frame_number * frame->header.blocksize;
+
+    for (int32_t f = 0; f < frames; f++) {
+        int64_t globalSample = frameStart + f;
+        int32_t bar = (int32_t)(globalSample / ctx->samplesPerBar);
+        if (bar >= ctx->numBars) break;
+
+        for (int c = 0; c < ctx->channels; c++) {
+            float val = fabsf((float)buffer[c][f] * scale);
+            if (val > ctx->peaks[bar])
+                ctx->peaks[bar] = val;
+        }
+    }
+    return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+int32_t analyzeFlacWaveform(const char *path, int32_t numBars, float *outPeaks) {
+    if (numBars <= 0 || numBars > 512 || !outPeaks) return -1;
+
+    // Initialize peaks to zero
+    memset(outPeaks, 0, numBars * sizeof(float));
+
+    // Get metadata first
+    FlacInfo info;
+    memset(&info, 0, sizeof(info));
+    if (get_flac_info(path, &info) != 0) return -2;
+    if (info.totalSamples == 0 || info.sampleRate == 0) return -3;
+
+    // Create temporary decoder
+    FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
+    if (!decoder) return -4;
+
+    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+
+    WaveformAnalysisCtx ctx;
+    ctx.numBars = numBars;
+    ctx.channels = info.channels;
+    ctx.bitsPerSample = info.bitsPerSample;
+    ctx.totalSamples = info.totalSamples;
+    ctx.samplesPerBar = info.totalSamples / numBars;
+    ctx.peaks = outPeaks;
+
+    FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
+        decoder, path, analysisWriteCallback, noOpMetadataCallback, errorCallback, &ctx);
+
+    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_delete(decoder);
+        return -5;
+    }
+
+    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+    FLAC__stream_decoder_process_until_end_of_stream(decoder);
+    FLAC__stream_decoder_finish(decoder);
+    FLAC__stream_decoder_delete(decoder);
+
+    // Normalize: find max peak and scale to 1.0
+    float maxPeak = 0.0f;
+    for (int32_t i = 0; i < numBars; i++) {
+        if (outPeaks[i] > maxPeak) maxPeak = outPeaks[i];
+    }
+    if (maxPeak > 0.0f && maxPeak < 1.0f) {
+        float invMax = 1.0f / maxPeak;
+        for (int32_t i = 0; i < numBars; i++) {
+            outPeaks[i] *= invMax;
+        }
+    }
+
+    // Ensure minimum visibility (0.02 floor so empty bars aren't invisible)
+    for (int32_t i = 0; i < numBars; i++) {
+        if (outPeaks[i] < 0.02f) outPeaks[i] = 0.02f;
+    }
+
+    return 0;
+}// ─── get_flac_metadata ──────────────────────────────────────────────────────
 
 static void copyVorbisComment(const FLAC__StreamMetadata *tags,
                               const char *key, char *out, int32_t outSize) {

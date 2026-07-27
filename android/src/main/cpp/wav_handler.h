@@ -26,3 +26,7 @@ int32_t loadWavIntoState(TrackState &trk, const char *path);
 extern "C" {
 EXPORT int32_t play_wav(const char* path);
 }
+
+// Analyze entire WAV file and compute peak amplitude per bar for waveform visualization.
+// Returns 0 on success, negative on error. Caller provides outPeaks buffer of numBars floats.
+int32_t analyzeWavWaveform(const char *path, int32_t numBars, float *outPeaks);

@@ -51,3 +51,7 @@ EXPORT int32_t get_flac_info(const char* path, FlacInfo* outInfo);
 EXPORT int32_t get_flac_metadata(const char* path, FlacMetadata* out);
 EXPORT int32_t play_flac(const char* path);
 }
+
+// Analyze entire FLAC file and compute peak amplitude per bar for waveform visualization.
+// Returns 0 on success, negative on error. Caller provides outPeaks buffer of numBars floats.
+int32_t analyzeFlacWaveform(const char *path, int32_t numBars, float *outPeaks);

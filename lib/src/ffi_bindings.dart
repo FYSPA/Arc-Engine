@@ -167,6 +167,9 @@ abstract class FfiInterface {
   void trackRegisterCallback(int portId);
   void trackInitDartApiDl(Pointer<Void> data);
 
+  // ─── Waveform analysis ───────────────────────────────────────────
+  int trackAnalyzeWaveform(int index, int numBars, Pointer<Float> outPeaks);
+
   static FfiInterface get instance => FfiBindings.instance;
   static set instance(FfiInterface v) => FfiBindings._instanceForTest = v;
 }
@@ -541,4 +544,12 @@ final class FfiBindings implements FfiInterface {
   late final _trackInitDartApiDl = _lib.lookupFunction<
       Void Function(Pointer<Void>),
       void Function(Pointer<Void>)>('track_init_dart_api_dl');
+
+  // ─── Waveform analysis ───────────────────────────────────────────
+  @override
+  int trackAnalyzeWaveform(int index, int numBars, Pointer<Float> outPeaks) =>
+      _trackAnalyzeWaveform(index, numBars, outPeaks);
+  late final _trackAnalyzeWaveform = _lib.lookupFunction<
+      Int32 Function(Int32, Int32, Pointer<Float>),
+      int Function(int, int, Pointer<Float>)>('track_analyze_waveform');
 }
