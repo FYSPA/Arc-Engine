@@ -168,109 +168,26 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         return preFrames;
     }
 
-    // ─── Caso 2: sin preBuf → solo fade-out ───
+    // ─── Caso 2: sin preBuf → activar fade-in para decoder nuevo ───
+    // Old track's frames are already in the ring buffer — no replay needed.
     if (preFrames <= 0) {
-        if (histCount > 0) {
-            int32_t space = trk.ringBuf->capacity(fadeCh) - avail;
-            int32_t n = (histCount < space) ? histCount : (space > 0 ? space : 0);
-            if (n > 0) {
-                // Scan backwards to skip trailing silence in old track
-                float silenceThresh = 1e-3f;
-                int32_t startIdx = (trk.fadeHistPos - 2 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-                for (int32_t s = 0; s < histCount; s++) {
-                    int checkIdx = (trk.fadeHistPos - 2 - s + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-                    if (fabsf(trk.fadeHistory[checkIdx * 2]) > silenceThresh ||
-                        fabsf(trk.fadeHistory[checkIdx * 2 + 1]) > silenceThresh) {
-                        startIdx = checkIdx;
-                        break;
-                    }
-                }
-                std::vector<float> fadeBuf(n * fadeCh);
-                for (int32_t i = 0; i < n; i++) {
-                    float g = 1.0f - (float)(i + 1) / (n + 1);
-                    int idx = (startIdx - i + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-                    for (int32_t c = 0; c < fadeCh && c < 2; c++)
-                        fadeBuf[i * fadeCh + c] = trk.fadeHistory[idx * 2 + c] * g;
-                    for (int32_t c = 2; c < fadeCh; c++)
-                        fadeBuf[i * fadeCh + c] = 0;
-                }
-                trk.ringBuf->push(fadeBuf.data(), n, fadeCh);
-            }
-        }
         trk.crossfading = 1;
         trk.crossfadeRemaining = fadeLen;
         return 0;
     }
 
-    // ─── Caso 3: preBuf + fadeLen > 0 → MEZCLA REAL ───
-    // NO reset() — the race between reset() and the AAudio callback's pop()
-    // causes push() to fail silently (unsigned underflow → used >= capacity → return 0).
-    // Instead, we append the crossfade AFTER existing old-track data in the ring buffer.
+    // ─── Caso 3: preBuf + fadeLen > 0 → GAPLESS TRANSITION ───
+    // Push preBuf at full volume. Old track's frames in the ring buffer
+    // play naturally, then seamlessly transition to the new track.
+    // No fadeHistory replay → no double-play.
     int32_t space = trk.ringBuf->capacity(fadeCh) - avail;
-
-    // mixLen: use full preFrames (no silence skip)
-    int32_t mixLen = std::min({fadeLen, histCount, preFrames, space});
-
-    if (mixLen <= 0) {
-        if (preFrames > 0 && space > 0) {
-            int32_t n = preFrames < space ? preFrames : space;
-            for (int32_t j = 0; j < n; j++) {
-                float angle = ((float)j / fadeLen) * 1.57079632679f;
-                float gainNew = sinf(angle);
-                for (int32_t c = 0; c < trk.preBufChannels; c++)
-                    trk.preBuf[j * trk.preBufChannels + c] *= gainNew;
-            }
-            trk.ringBuf->push(trk.preBuf, n, trk.preBufChannels);
-        }
-        trk.crossfading = 1;
-        trk.crossfadeRemaining = fadeLen;
-        delete[] trk.preBuf; trk.preBuf = nullptr;
-        trk.preBufReady = 0; trk.preBufFrames = 0;
-        return preFrames;
+    int32_t pushLen = std::min(preFrames, space > 0 ? space : 0);
+    if (pushLen > 0) {
+        trk.ringBuf->push(trk.preBuf, pushLen, trk.preBufChannels);
     }
 
-    // Equal-power crossfade: compute and push in chunks to avoid ring buffer underrun.
-    // Full-buffer computation (132k frames) takes ~22ms — during that time the ring buffer
-    // empties and the callback outputs silence → audible click.
-    static const int32_t CHUNK = 192;  // 1 callback period at 44100Hz
-    float chunkBuf[CHUNK * fadeCh];
-    int32_t newestIdx = (trk.fadeHistPos - 1 + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-    for (int32_t i = 0; i < mixLen; i += CHUNK) {
-        int32_t n = std::min(CHUNK, mixLen - i);
-        for (int32_t j = 0; j < n; j++) {
-            float angle = ((float)(i + j) / fadeLen) * 1.57079632679f;
-            float gainOld = cosf(angle);
-            float gainNew = sinf(angle);
-            int hi = (newestIdx - (i + j) + MAX_CROSSFADE_FRAMES) % MAX_CROSSFADE_FRAMES;
-            for (int32_t c = 0; c < fadeCh && c < 2; c++)
-                chunkBuf[j * fadeCh + c] = trk.fadeHistory[hi * 2 + c] * gainOld
-                                        + trk.preBuf[(i + j) * trk.preBufChannels + c] * gainNew;
-            for (int32_t c = 2; c < fadeCh; c++)
-                chunkBuf[j * fadeCh + c] = 0;
-        }
-        trk.ringBuf->push(chunkBuf, n, fadeCh);
-    }
-
-    int32_t remaining = preFrames - mixLen;
-    if (remaining > 0) {
-        float *remPtr = trk.preBuf + mixLen * trk.preBufChannels;
-        if (mixLen < fadeLen) {
-            // Crossfade incomplete — continue sin curve into remaining frames
-            for (int32_t j = 0; j < remaining; j++) {
-                int32_t fi = mixLen + j;
-                float angle = ((float)fi / fadeLen) * 1.57079632679f;
-                float g = (angle >= 1.57079632679f) ? 1.0f : sinf(angle);
-                for (int32_t c = 0; c < trk.preBufChannels; c++)
-                    remPtr[j * trk.preBufChannels + c] *= g;
-            }
-        }
-        // If mixLen >= fadeLen: push at full volume (already at sin(π/2) = 1.0)
-        trk.ringBuf->push(remPtr, remaining, trk.preBufChannels);
-    }
-
-    int32_t postRemaining = std::max(0, fadeLen - mixLen);
-    trk.crossfading = (postRemaining > 0) ? 1 : 0;
-    trk.crossfadeRemaining = postRemaining > 0 ? postRemaining : 0;
+    trk.crossfading = 0;
+    trk.crossfadeRemaining = 0;
 
     delete[] trk.preBuf; trk.preBuf = nullptr;
     trk.preBufReady = 0; trk.preBufFrames = 0;

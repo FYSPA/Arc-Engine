@@ -65,12 +65,14 @@ struct TrackState {
     std::atomic<int> crossfading{0};
     std::atomic<int> crossfadeRemaining{0};
     std::atomic<int> fadeLen{0};  // set by crossfadeMsToFrames() before use
+    int32_t crossfadePreBufPos{0};  // read position in preBuf during crossfade mixing
 
     // Pre-decoded buffer for zero-gap gapless transitions (FLAC only)
     float *preBuf{nullptr};
     int preBufFrames{0};
     int preBufChannels{0};
     int preBufSampleRate{0};           // source sample rate of preBuf (for resampling on SR mismatch)
+    int32_t preBufOrigFrames{0};       // original frame count before SR resampling (for seek in new decoder)
     std::atomic<int> preBufReady{0};
 
     // Flag: skip pacing check after gapless transition to prevent decoder stall

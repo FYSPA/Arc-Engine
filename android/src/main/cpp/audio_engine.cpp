@@ -184,6 +184,21 @@ void predecodeFlac(TrackState &trk, const char *path) {
         trk.preBufFrames = ctx->totalFrames;
         trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
         trk.preBufSampleRate = ctx->sampleRate;
+        trk.preBufOrigFrames = 0;
+        // Pre-resample if SR mismatch — eliminates70-158ms delay during gapless transition
+        if (gCtl.sampleRate > 0 && ctx->sampleRate > 0 && ctx->sampleRate != gCtl.sampleRate) {
+            double ratio = (double)gCtl.sampleRate / ctx->sampleRate;
+            int32_t outFrames = (int32_t)(ctx->totalFrames * ratio);
+            float *resampled = new float[outFrames * 2];
+            resampleSinc(resampled, outFrames, ctx->buf, ctx->totalFrames, 2, ratio);
+            trk.preBufOrigFrames = ctx->totalFrames;
+            delete[] trk.preBuf;
+            trk.preBuf = resampled;
+            trk.preBufFrames = outFrames;
+            trk.preBufSampleRate = gCtl.sampleRate;  // mark as already resampled
+            LOGI("  predecode FLAC: pre-resampled %d→%d frames (%dHz→%dHz)",
+                 ctx->totalFrames, outFrames, ctx->sampleRate, gCtl.sampleRate);
+        }
         trk.preBufReady = 1;
         LOGI("  predecode FLAC: %d frames ready, %d ch, sr=%d", ctx->totalFrames, trk.preBufChannels, ctx->sampleRate);
     } else {
@@ -355,6 +370,8 @@ EXPORT void track_set_next(int32_t index, const char *path) {
     if (trk.preBuf) { delete[] trk.preBuf; trk.preBuf = nullptr; }
     trk.preBufReady = 0;
     trk.preBufFrames = 0;
+    trk.preBufOrigFrames = 0;
+    trk.crossfadePreBufPos = 0;
     const char *ext = strrchr(path, '.');
     if (ext && (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".FLAC") == 0)) {
         if (gCtl.outChannels >= 2) {

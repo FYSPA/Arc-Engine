@@ -291,6 +291,29 @@ void flacPlaybackThread(int ti) {
         }
         gCtl.sampleRate = ps.info.sampleRate;
         LOGI("FLAC thread[%d]: shared AAudio stream created", ti);
+        // Post-stream pre-decode: track_set_next was called before stream creation,
+        // predecode was skipped (outChannels=0). Now that stream exists, do it.
+        if (trk.hasNext && !trk.preBufReady && gCtl.outChannels >= 2) {
+            LOGI("FLAC thread[%d]: post-stream predecode for %s", ti, trk.nextPath);
+            predecodeFlac(trk, trk.nextPath);
+        }
+        // Post-stream pre-resample: predecodeFlac couldn't pre-resample because
+        // stream didn't exist yet. Do it now.
+        if (trk.preBufReady && trk.preBufSampleRate > 0
+            && trk.preBufSampleRate != gCtl.sampleRate && trk.preBufOrigFrames == 0) {
+            int32_t srcSr = trk.preBufSampleRate;
+            double ratio = (double)gCtl.sampleRate / srcSr;
+            int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
+            float *resampled = new float[outFrames * 2];
+            resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+            trk.preBufOrigFrames = trk.preBufFrames;
+            delete[] trk.preBuf;
+            trk.preBuf = resampled;
+            trk.preBufFrames = outFrames;
+            trk.preBufSampleRate = gCtl.sampleRate;
+            LOGI("FLAC thread[%d]: post-stream pre-resampled %d→%d frames (%dHz→%dHz)",
+                 ti, trk.preBufOrigFrames, outFrames, srcSr, gCtl.sampleRate);
+        }
     }
 
     trk.running = 1;
@@ -304,9 +327,9 @@ void flacPlaybackThread(int ti) {
     while (read(trk.stopFd, &_stopFlac, sizeof(_stopFlac)) <= 0) {
         _stopFlac = 0;
 
-        // ─── Early crossfade trigger ───
-        // Start crossfade before track ends to avoid trailing silence.
-        // Triggers when remaining frames <= fadeLen (~3s buffer for Spotify-style).
+        // EARLY CROSSFADE: activate real-time mixing — old decoder continues, write callback
+        // mixes old frames with preBuf (old fading out, new fading in) and pushes to ring buffer.
+        // Old decoder reaches EOS → goto flac_gapless for decoder swap.
         if (!trk.loop && trk.hasNext && !trk.crossfading.load()
             && ps.info.totalSamples > 0) {
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
@@ -314,7 +337,12 @@ void flacPlaybackThread(int ti) {
             if (remaining > 0 && remaining <= fadeLen) {
                 LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)",
                      ti, (long long)remaining, fadeLen);
-                goto flac_gapless;
+                trk.fadeLen.store(fadeLen);
+                trk.crossfading = 1;
+                trk.crossfadeRemaining = (int32_t)remaining;
+                trk.crossfadePreBufPos = 0;
+                // Do NOT goto flac_gapless — let old decoder keep running.
+                // Write callback will mix old+new frames and push to ring buffer.
             }
         }
 
@@ -329,114 +357,143 @@ void flacPlaybackThread(int ti) {
                 if (trk.ringBuf) trk.ringBuf->reset();
             } else if (trk.hasNext) {
               flac_gapless:
-                // Pre-decode first (need source SR for mismatch detection)
-                if (!trk.preBufReady && gCtl.outChannels >= 2) {
-                    predecodeFlac(trk, trk.nextPath);
-                }
-                // Check channel mismatch — can't handle, abort
-                if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
-                    // Check if only SR differs (channels match) — resample is OK
-                    bool channelsDiffer = false;
-                    if (trk.preBufReady && trk.preBufChannels != gCtl.outChannels) {
-                        channelsDiffer = true;
+                if (trk.crossfading.load()) {
+                    // Crossfade cleanup: push remaining preBuf with fade-in
+                    int32_t preRemaining = trk.preBufFrames - trk.crossfadePreBufPos;
+                    if (preRemaining > 0 && trk.preBuf && trk.ringBuf) {
+                        int32_t fadeLen = trk.fadeLen.load();
+                        int32_t consumed = trk.crossfadePreBufPos;
+                        std::vector<float> faded(preRemaining * trk.preBufChannels);
+                        for (int32_t i = 0; i < preRemaining; i++) {
+                            float t = (float)(consumed + i) / fadeLen;
+                            if (t > 1.0f) t = 1.0f;
+                            float fadeIn = sinf(t * 1.57079632679f);
+                            for (int32_t c = 0; c < trk.preBufChannels; c++)
+                                faded[i * trk.preBufChannels + c] =
+                                    trk.preBuf[(consumed + i) * trk.preBufChannels + c] * fadeIn;
+                        }
+                        trk.ringBuf->push(faded.data(), preRemaining, trk.preBufChannels);
+                        LOGI("FLAC thread[%d]: crossfade done — pushed %d remaining preBuf frames (faded)", ti, preRemaining);
                     }
-                    // If we couldn't pre-decode, re-check with channel-only logic
-                    if (!trk.preBufReady) {
-                        LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
-                             ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
-                        break;
-                    }
-                    if (channelsDiffer) {
-                        LOGI("FLAC thread[%d]: channel mismatch — stream=%dch, next=%dch. Aborting gapless.",
-                             ti, gCtl.outChannels, trk.preBufChannels);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
-                        break;
-                    }
-                    // SR-only mismatch: resample preBuf below
-                }
-                // Resample preBuf if SR mismatch — save original frame count for seek
-                int32_t origPreFrames = trk.preBufFrames;
-                bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
-                                   && trk.preBufSampleRate > 0);
-                if (srMismatch) {
-                    double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
-                    int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
-                    float *resampled = new float[outFrames * 2];
-                    int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
-                    auto t0 = std::chrono::steady_clock::now();
-                    resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
-                    auto t1 = std::chrono::steady_clock::now();
-                    int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                    delete[] trk.preBuf;
-                    trk.preBuf = resampled;
-                    trk.preBufFrames = outFrames;
-                    LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
-                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate,
-                         (long long)resampleMs, ringBefore,
-                         trk.ringBuf ? trk.ringBuf->available(ch) : -1);
-                }
-                // Crossfade: push mixed audio into ring buffer
-                int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                LOGI("FLAC thread[%d]: crossfade: ringBuf avail before=%d, preBufFrames=%d, fadeHistCount=%d",
-                     ti, availBefore, trk.preBufFrames, trk.fadeHistCount);
-                writeGaplessCrossfade(trk, ch);
-                int32_t availAfter = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                LOGI("FLAC thread[%d]: crossfade: ringBuf avail after=%d", ti, availAfter);
-                // Destroy old decoder (do NOT create new one yet)
-                FLAC__stream_decoder_finish(decoder);
-                FLAC__stream_decoder_delete(decoder);
-                decoder = nullptr;
-                // If SR mismatch: enable real-time resampling in callback (no stream recreation)
-                if (srMismatch) {
-                    trk.resampleToStream = 1;
-                    trk.streamSampleRate = gCtl.sampleRate;
-                    LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled",
-                         ti, trk.preBufSampleRate, gCtl.sampleRate);
+                    trk.crossfading = 0;
+                    trk.crossfadeRemaining = 0;
+                    trk.crossfadePreBufPos = 0;
+                    delete[] trk.preBuf; trk.preBuf = nullptr;
+                    trk.preBufReady = 0;
+                    // Don't clear preBufFrames/preBufOrigFrames — decoder swap needs them
                 } else {
-                    trk.resampleToStream = 0;
-                    trk.streamSampleRate = 0;
+                    // Normal gapless: pre-decode, resample, crossfade push
+                    if (!trk.preBufReady && gCtl.outChannels >= 2) {
+                        predecodeFlac(trk, trk.nextPath);
+                    }
+                    if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
+                        bool channelsDiffer = false;
+                        if (trk.preBufReady && trk.preBufChannels != gCtl.outChannels) {
+                            channelsDiffer = true;
+                        }
+                        if (!trk.preBufReady) {
+                            LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
+                                 ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
+                            trk.gapLessVersion++;
+                            trk.gapLessAbort = 1;
+                            trk.hasNext = 0;
+                            break;
+                        }
+                        if (channelsDiffer) {
+                            LOGI("FLAC thread[%d]: channel mismatch — stream=%dch, next=%dch. Aborting gapless.",
+                                 ti, gCtl.outChannels, trk.preBufChannels);
+                            trk.gapLessVersion++;
+                            trk.gapLessAbort = 1;
+                            trk.hasNext = 0;
+                            break;
+                        }
+                    }
+                    // Resample preBuf if SR mismatch
+                    bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
+                                       && trk.preBufSampleRate > 0);
+                    if (srMismatch) {
+                        double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
+                        int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
+                        float *resampled = new float[outFrames * 2];
+                        int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
+                        auto t0 = std::chrono::steady_clock::now();
+                        resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+                        auto t1 = std::chrono::steady_clock::now();
+                        int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                        delete[] trk.preBuf;
+                        trk.preBuf = resampled;
+                        trk.preBufFrames = outFrames;
+                        LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
+                             ti, trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames,
+                             outFrames, trk.preBufSampleRate, gCtl.sampleRate,
+                             (long long)resampleMs, ringBefore,
+                             trk.ringBuf ? trk.ringBuf->available(ch) : -1);
+                    }
+                    // Crossfade: push mixed audio into ring buffer
+                    int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
+                    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail before=%d, preBufFrames=%d, fadeHistCount=%d",
+                         ti, availBefore, trk.preBufFrames, trk.fadeHistCount);
+                    writeGaplessCrossfade(trk, ch);
+                    int32_t availAfter = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
+                    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail after=%d", ti, availAfter);
                 }
-                // Create new decoder
-                decoder = FLAC__stream_decoder_new();
-                if (!decoder) break;
-                FLAC__stream_decoder_set_metadata_respond_all(decoder);
-                st = FLAC__stream_decoder_init_file(
-                    decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
-                if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                // Shared decoder swap (both crossfade and normal paths converge here)
+                {
+                    int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
+                    bool srMismatch = (trk.preBufOrigFrames > 0);
+                    trk.preBufFrames = 0;
+                    trk.preBufOrigFrames = 0;
+                    // Destroy old decoder
+                    FLAC__stream_decoder_finish(decoder);
+                    FLAC__stream_decoder_delete(decoder);
+                    decoder = nullptr;
+                    // If SR mismatch: enable real-time resampling in callback
+                    if (srMismatch) {
+                        trk.resampleToStream = 1;
+                        trk.streamSampleRate = gCtl.sampleRate;
+                        LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled",
+                             ti, trk.preBufSampleRate, gCtl.sampleRate);
+                    } else {
+                        trk.resampleToStream = 0;
+                        trk.streamSampleRate = 0;
+                    }
+                    // Create new decoder
+                    decoder = FLAC__stream_decoder_new();
+                    if (!decoder) break;
+                    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+                    st = FLAC__stream_decoder_init_file(
+                        decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+                    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+                        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                        trk.hasNext = 0;
+                        break;
+                    }
+                    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+                    if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+                        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                        trk.hasNext = 0;
+                        break;
+                    }
+                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+                    trk.gapLessVersion++;
                     trk.hasNext = 0;
-                    break;
+                    trk.sampleRate = ps.info.sampleRate;
+                    trk.channels = ps.info.channels;
+                    trk.totalFrames = ps.info.totalSamples;
+                    trk.writtenFrames = 0;
+                    ch = ps.info.channels;
+                    threshold = RingBuffer::pacingThreshold(ch);
+                    // Seek past pre-decoded frames
+                    if (origPreFrames > 0) {
+                        FLAC__stream_decoder_seek_absolute(decoder, origPreFrames);
+                        trk.writtenFrames = origPreFrames;
+                    }
+                    trk.fadeHistPos = 0;
+                    trk.fadeHistCount = 0;
+                    trk.skipPacing = 0;
+                    LOGI("FLAC thread[%d]: gapless -> %s (seek to %lld)", ti, trk.path, (long long)origPreFrames);
+                    continue;
                 }
-                FLAC__stream_decoder_process_until_end_of_metadata(decoder);
-                if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
-                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
-                    trk.hasNext = 0;
-                    break;
-                }
-                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                trk.gapLessVersion++;
-                trk.hasNext = 0;
-                trk.sampleRate = ps.info.sampleRate;
-                trk.channels = ps.info.channels;
-                trk.totalFrames = ps.info.totalSamples;
-                trk.writtenFrames = 0;
-                ch = ps.info.channels;
-                threshold = RingBuffer::pacingThreshold(ch);
-                // Seek past pre-decoded frames (use original count, not resampled)
-                if (origPreFrames > 0) {
-                    FLAC__stream_decoder_seek_absolute(decoder, origPreFrames);
-                    trk.writtenFrames = origPreFrames;
-                }
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
-                LOGI("FLAC thread[%d]: gapless -> %s (seek to %lld)", ti, trk.path, (long long)origPreFrames);
-                continue;
             } else break;
         }
 
@@ -481,7 +538,7 @@ void flacPlaybackThread(int ti) {
                     }
                 }
                 // Resample preBuf if SR mismatch — save original frame count for seek
-                int32_t origPreFrames = trk.preBufFrames;
+                int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
                 bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
                                    && trk.preBufSampleRate > 0);
                 if (srMismatch) {
@@ -513,7 +570,7 @@ void flacPlaybackThread(int ti) {
                 FLAC__stream_decoder_delete(decoder);
                 decoder = nullptr;
                 // If SR mismatch: enable real-time resampling in callback (no stream recreation)
-                if (srMismatch) {
+                if (srMismatch || trk.preBufOrigFrames > 0) {
                     trk.resampleToStream = 1;
                     trk.streamSampleRate = gCtl.sampleRate;
                     LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled (seek-gapless)",

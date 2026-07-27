@@ -89,7 +89,64 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
         }
 
     if (trk.ringBuf) {
-        if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
+        // ─── CROSSFADE: mix old decoder frames with preBuf in real-time ───
+        if (trk.crossfading.load() && trk.preBuf && trk.crossfadeRemaining.load() > 0
+            && trk.crossfadePreBufPos < trk.preBufFrames) {
+            // Prepare old frames (resample if SR mismatch)
+            float *oldFrames = floatBuf.data();
+            int32_t oldCount = frames;
+            std::vector<float> resampledOld;
+            if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
+                && trk.streamSampleRate != trk.sampleRate) {
+                double ratio = (double)trk.streamSampleRate / trk.sampleRate;
+                int32_t extLen = trk.resampleOverlapCount + frames;
+                int32_t skipOutput = (trk.resampleOverlapCount > 0)
+                    ? (int32_t)(trk.resampleOverlapCount * ratio + 0.5) : 0;
+                int32_t totalOut = (int32_t)(extLen * ratio + 0.5);
+                int32_t outFrames = totalOut - skipOutput;
+                if (outFrames > 0 && outFrames <= frames * 2) {
+                    resampledOld.resize(outFrames * channels);
+                    resampleSincStream(resampledOld.data(), outFrames, floatBuf.data(), frames, channels, ratio,
+                                       trk.resampleOverlap, trk.resampleOverlapCount);
+                    for (int32_t i = 0; i < outFrames * channels; i++) {
+                        if (resampledOld[i] > 1.0f) resampledOld[i] = 1.0f;
+                        else if (resampledOld[i] < -1.0f) resampledOld[i] = -1.0f;
+                    }
+                    oldFrames = resampledOld.data();
+                    oldCount = outFrames;
+                }
+            }
+            // Mix old + new with crossfade curves
+            int32_t fadeLen = trk.fadeLen.load();
+            int32_t remaining = trk.crossfadeRemaining.load();
+            int32_t mixCount = std::min(oldCount, remaining);
+            mixCount = std::min(mixCount, trk.preBufFrames - trk.crossfadePreBufPos);
+            int32_t startPos = fadeLen - remaining;
+            std::vector<float> mixed(mixCount * channels);
+            for (int32_t i = 0; i < mixCount; i++) {
+                float t = (float)(startPos + i) / fadeLen;
+                float fadeOut = cosf(t * 1.57079632679f);
+                float fadeIn = sinf(t * 1.57079632679f);
+                for (int32_t c = 0; c < channels; c++) {
+                    float o = oldFrames[i * channels + c] * fadeOut;
+                    float n = trk.preBuf[trk.crossfadePreBufPos * channels + c] * fadeIn;
+                    float m = o + n;
+                    if (m > 1.0f) m = 1.0f; else if (m < -1.0f) m = -1.0f;
+                    mixed[i * channels + c] = m;
+                }
+                trk.crossfadePreBufPos++;
+            }
+            trk.ringBuf->push(mixed.data(), mixCount, channels);
+            trk.crossfadeRemaining -= mixCount;
+            trk.lastFrame[0] = mixed[(mixCount - 1) * channels];
+            if (channels > 1) trk.lastFrame[1] = mixed[(mixCount - 1) * channels + 1];
+            // Push any remaining old frames (after crossfade ends) at full volume
+            if (oldCount > mixCount) {
+                trk.ringBuf->push(oldFrames + mixCount * channels, oldCount - mixCount, channels);
+                trk.lastFrame[0] = oldFrames[(oldCount - 1) * channels];
+                if (channels > 1) trk.lastFrame[1] = oldFrames[(oldCount - 1) * channels + 1];
+            }
+        } else if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
             && trk.streamSampleRate != trk.sampleRate) {
             double ratio = (double)trk.streamSampleRate / trk.sampleRate;
             int32_t extLen = trk.resampleOverlapCount + frames;
