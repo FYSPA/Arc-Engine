@@ -30,6 +30,7 @@
 | **P0.4** | **Limiter post-mezcla** — Hard-clipper con threshold configurable (-60 a 0 dB), aplicado después de effects chain |
 | **P0.1** | **EQ Q ajustable por banda** — Parámetro Q configurable por banda con filtros biquad |
 | **P0.2** | **EQ tipo de filtro por banda** — Peak/LowShelf/HighShelf/LowPass/HighPass por banda |
+| **P1.1** | **EQ** | Presets (10 built-in + custom save/load/delete) | `eq_dialog.dart` + `eq_preset.dart` |
 | **P2.2** | **Gapless playback** — Transiciones sin silencio vía `setNextTrack()` + crossfade configurable (0–5s) |
 | **P2.4** | **Compresor** — Threshold, ratio, knee, attack, release, makeup gain |
 | **P2.4** | **Reverb** — 4 comb + 2 all-pass con pre-delay |
@@ -51,7 +52,6 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P1.1 | **EQ** | Presets (Flat/Rock/Pop/Jazz/Classical/Custom) | `eq_dialog.dart:99-107` |
 | P1.2 | **EQ** | Curva de respuesta frecuencia vs ganancia | `eq_dialog.dart:631-773` (CustomPaint, 200 puntos) |
 | P1.3 | **Mixer** | Fade-out en stop (256 samples, 4 threads) | `engine_threads.cpp:77-86` |
 | P1.4 | **UI** | Drag & drop reorder | 🚫 Saltado — no se implementará |

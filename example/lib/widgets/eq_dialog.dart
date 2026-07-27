@@ -96,15 +96,8 @@ const _filterTypes = [
   AudioEngine.eqHighPass,
 ];
 
-const _presetGains = <String, List<double>>{
-  'Flat': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  'Rock': [4, 2, 0, -1, -2, 0, 2, 3, 4, 3],
-  'Pop': [-1, 0, 1, 2, 3, 2, 1, 0, -1, -1],
-  'Jazz': [3, 3, 2, 1, 0, 0, 1, 2, 2, 1],
-  'Classical': [4, 3, 1, 0, 0, 0, 0, 1, 3, 4],
-};
-
-const _presetNames = ['Flat', 'Rock', 'Pop', 'Jazz', 'Classical'];
+const _storageKeyPreset = 'eq_preset';
+const _storageKeyCustom = 'custom_eq_presets';
 
 class EqDialog extends StatefulWidget {
   const EqDialog({super.key});
@@ -118,49 +111,126 @@ class _EqDialogState extends State<EqDialog> {
   int _expandedIndex = -1;
   String _currentPreset = 'Flat';
   bool _settingPreset = false;
+  List<EqPreset> _customPresets = [];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      SharedPreferences.getInstance().then((prefs) {
-        final name = prefs.getString('eq_preset') ?? 'Flat';
-        if (mounted && name != 'Flat' && _presetGains.containsKey(name)) {
-          _applyPreset(name);
-        }
-      });
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      _customPresets =
+          EqPreset.listFromJson(prefs.getString(_storageKeyCustom) ?? '[]');
+      final name = prefs.getString(_storageKeyPreset) ?? 'Flat';
+      if (mounted) {
+        _applyPresetByName(name);
+      }
     });
   }
 
-  Future<void> _savePreset(String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('eq_preset', name);
+  EqPreset? _findPreset(String name) {
+    for (final p in EqPreset.builtInPresets) {
+      if (p.name == name) return p;
+    }
+    for (final p in _customPresets) {
+      if (p.name == name) return p;
+    }
+    return null;
   }
 
-  void _applyPreset(String name) {
-    final gains = _presetGains[name];
-    if (gains == null) return;
+  Future<void> _saveState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_storageKeyPreset, _currentPreset);
+    await prefs.setString(
+        _storageKeyCustom, EqPreset.listToJson(_customPresets));
+  }
+
+  void _applyPreset(EqPreset preset) {
     _settingPreset = true;
     setState(() {
-      _currentPreset = name;
+      _currentPreset = preset.name;
       for (int i = 0; i < 10; i++) {
-        _gains[i] = gains[i];
-        _qs[i] = 0.707;
-        _types[i] = AudioEngine.eqPeaking;
+        _gains[i] = preset.gains[i];
+        _qs[i] = preset.qs[i];
+        _types[i] = preset.types[i];
         _enabled[i] = _gains[i] != 0.0;
         _updateBand(i);
       }
       _expandedIndex = -1;
     });
     _settingPreset = false;
-    _savePreset(name);
+    _saveState();
+  }
+
+  void _applyPresetByName(String name) {
+    final preset = _findPreset(name);
+    if (preset != null) _applyPreset(preset);
   }
 
   void _onUserModified() {
     if (!_settingPreset && _currentPreset != 'Custom') {
       _currentPreset = 'Custom';
-      _savePreset('Custom');
+      _saveState();
     }
+  }
+
+  Future<void> _saveCustomPreset() async {
+    final controller = TextEditingController(
+        text: _currentPreset == 'Custom' ? '' : _currentPreset);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A24),
+        title: const Text('Save Preset', style: TextStyle(fontSize: 15)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(fontSize: 13),
+          decoration: InputDecoration(
+            hintText: 'Preset name',
+            hintStyle: TextStyle(
+                color: Colors.white.withValues(alpha: 0.3), fontSize: 13),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel', style: TextStyle(fontSize: 12)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Save', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || name == 'Custom') return;
+
+    final preset = EqPreset(
+      name: name,
+      gains: List<double>.from(_gains),
+      types: List<int>.from(_types),
+      qs: List<double>.from(_qs),
+      isBuiltIn: false,
+    );
+
+    setState(() {
+      _customPresets.removeWhere((p) => p.name == name);
+      _customPresets.add(preset);
+      _currentPreset = name;
+    });
+    _saveState();
+  }
+
+  void _deleteCustomPreset(String name) {
+    setState(() {
+      _customPresets.removeWhere((p) => p.name == name);
+      if (_currentPreset == name) {
+        _currentPreset = 'Flat';
+        _applyPreset(EqPreset.flat);
+      }
+    });
+    _saveState();
   }
 
   static const _bands = [
@@ -189,7 +259,7 @@ class _EqDialogState extends State<EqDialog> {
   }
 
   void _reset() {
-    _applyPreset('Flat');
+    _applyPreset(EqPreset.flat);
     setState(() => _bypass = false);
     AudioEngine.resetEq();
     AudioEngine.setEqBypass(false);
@@ -237,6 +307,91 @@ class _EqDialogState extends State<EqDialog> {
     );
   }
 
+  List<PopupMenuEntry<String>> _buildPresetMenuItems() {
+    final items = <PopupMenuEntry<String>>[];
+
+    for (final p in EqPreset.builtInPresets) {
+      items.add(_presetMenuItem(p.name));
+    }
+
+    if (_customPresets.isNotEmpty) {
+      items.add(const PopupMenuDivider(height: 1));
+      for (final p in _customPresets) {
+        items.add(PopupMenuItem<String>(
+          value: p.name,
+          height: 28,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (p.name == _currentPreset)
+                const Icon(Icons.check, size: 14, color: Color(0xFF4CAF50))
+              else
+                const SizedBox(width: 14),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(p.name, style: const TextStyle(fontSize: 11)),
+              ),
+              GestureDetector(
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _deleteCustomPreset(p.name);
+                },
+                child: Icon(Icons.close,
+                    size: 12, color: Colors.white.withValues(alpha: 0.35)),
+              ),
+            ],
+          ),
+        ));
+      }
+    }
+
+    items.add(const PopupMenuDivider(height: 1));
+    items.add(PopupMenuItem<String>(
+      value: '__save__',
+      height: 28,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.save_outlined,
+              size: 14, color: Colors.white.withValues(alpha: 0.5)),
+          const SizedBox(width: 6),
+          Text('Save as...',
+              style: TextStyle(
+                  fontSize: 11, color: Colors.white.withValues(alpha: 0.7))),
+        ],
+      ),
+    ));
+
+    return items;
+  }
+
+  PopupMenuItem<String> _presetMenuItem(String name) {
+    final active = name == _currentPreset;
+    return PopupMenuItem<String>(
+      value: name,
+      height: 28,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (active)
+            const Icon(Icons.check, size: 14, color: Color(0xFF4CAF50))
+          else
+            const SizedBox(width: 14),
+          const SizedBox(width: 4),
+          Text(name, style: const TextStyle(fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
+  void _onPresetSelected(String value) {
+    if (value == '__save__') {
+      _saveCustomPreset();
+    } else {
+      _applyPresetByName(value);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -260,25 +415,8 @@ class _EqDialogState extends State<EqDialog> {
               initialValue: _currentPreset,
               padding: EdgeInsets.zero,
               tooltip: 'Preset: $_currentPreset',
-              onSelected: _applyPreset,
-              itemBuilder: (_) => _presetNames.map((name) {
-                final active = name == _currentPreset;
-                return PopupMenuItem<String>(
-                  value: name,
-                  height: 28,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (active)
-                        const Icon(Icons.check,
-                            size: 14, color: Color(0xFF4CAF50)),
-                      if (!active) const SizedBox(width: 14),
-                      const SizedBox(width: 4),
-                      Text(name, style: const TextStyle(fontSize: 11)),
-                    ],
-                  ),
-                );
-              }).toList(),
+              onSelected: _onPresetSelected,
+              itemBuilder: (_) => _buildPresetMenuItems(),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 height: 22,
@@ -657,7 +795,6 @@ class _EqCurvePainter extends CustomPainter {
       fontFamily: 'monospace',
     );
 
-    // Grid: horizontal lines at -12, -6, 0, +6, +12 dB
     for (int db = -12; db <= 12; db += 6) {
       final yNorm = (db + 12) / 24;
       final y = size.height - padB - yNorm * (size.height - padT - padB);
@@ -675,7 +812,6 @@ class _EqCurvePainter extends CustomPainter {
       }
     }
 
-    // Y-axis labels
     final labelBuilder = TextPainter(textDirection: TextDirection.ltr);
     for (int db = -12; db <= 12; db += 6) {
       if (db == 0) continue;
@@ -686,14 +822,12 @@ class _EqCurvePainter extends CustomPainter {
       labelBuilder.paint(canvas, Offset(padL - 6 - labelBuilder.width, y - 4));
     }
 
-    // 0 dB label
     final zeroY = size.height - padB - 0.5 * (size.height - padT - padB);
     labelBuilder.text = TextSpan(text: '0', style: labelPaint);
     labelBuilder.layout();
     labelBuilder.paint(
         canvas, Offset(padL - 6 - labelBuilder.width, zeroY - 4));
 
-    // Frequency axis labels
     for (final b in bands) {
       final t = (math.log(b.freq / 20) / math.log(1000));
       final x = padL + t * (size.width - padL - padR);
@@ -703,7 +837,6 @@ class _EqCurvePainter extends CustomPainter {
           canvas, Offset(x - labelBuilder.width / 2, size.height - padB + 6));
     }
 
-    // Frequency markers (vertical dotted lines)
     final markerPaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.06)
       ..strokeWidth = 0.5;
@@ -720,7 +853,6 @@ class _EqCurvePainter extends CustomPainter {
 
     if (points.isEmpty) return;
 
-    // Fill below curve
     final fillPath = Path()..moveTo(points[0].dx, size.height - padB);
     for (final p in points) {
       fillPath.lineTo(p.dx, p.dy);
@@ -739,7 +871,6 @@ class _EqCurvePainter extends CustomPainter {
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
     canvas.drawPath(fillPath, fillPaint);
 
-    // Curve line
     final curvePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.7)
       ..strokeWidth = 1.5
@@ -753,7 +884,6 @@ class _EqCurvePainter extends CustomPainter {
     }
     canvas.drawPath(curvePath, curvePaint);
 
-    // Band dots
     final dotPaint = Paint()
       ..color = const Color(0xFF4CAF50).withValues(alpha: 0.6)
       ..style = PaintingStyle.fill;
