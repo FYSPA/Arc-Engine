@@ -76,16 +76,6 @@ void wavPlaybackThread(int ti) {
         _st = 0;
         if (read(trk.stopFd, &_st, sizeof(_st)) > 0) {
             LOGI("WAV thread[%d]: got stop signal", ti);
-            // Fade-out: write FADE_FRAMES ramping from last sample to silence
-            if (trk.ringBuf && trk.writtenFrames > 0) {
-                float fadeBuf[FADE_FRAMES * ch];
-                for (int i = 0; i < FADE_FRAMES; i++) {
-                    float g = 1.0f - (float)i / FADE_FRAMES;
-                    for (int c = 0; c < ch; c++)
-                        fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
-                }
-                trk.ringBuf->push(fadeBuf, FADE_FRAMES, ch);
-            }
             break;
         }
 
@@ -231,6 +221,17 @@ void wavPlaybackThread(int ti) {
 
     LOGI("WAV thread[%d]: loop exit wf=%lld total=%lld", ti,
          (long long)trk.writtenFrames.load(), (long long)total);
+
+    // Fade-out: write FADE_FRAMES ramping from last sample to silence
+    if (trk.ringBuf && trk.writtenFrames > 0) {
+        std::vector<float> fadeBuf(FADE_FRAMES * ch);
+        for (int i = 0; i < FADE_FRAMES; i++) {
+            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
+            for (int c = 0; c < ch; c++)
+                fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+        }
+        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
+    }
 
     // Drain ring buffer so fade-out / last data is consumed before cleanup
     if (trk.ringBuf) {
@@ -644,13 +645,13 @@ void flacPlaybackThread(int ti) {
 
     // Fade-out: write FADE_FRAMES ramping from last sample to silence
     if (trk.ringBuf && trk.writtenFrames > 0) {
-        float fadeBuf[FADE_FRAMES * ch];
+        std::vector<float> fadeBuf(FADE_FRAMES * ch);
         for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = 1.0f - (float)i / FADE_FRAMES;
+            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
             for (int c = 0; c < ch; c++)
                 fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
         }
-        trk.ringBuf->push(fadeBuf, FADE_FRAMES, ch);
+        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
     }
 
     // Drain ring buffer so fade-out / last data is consumed before cleanup
@@ -951,13 +952,13 @@ void mediaPlaybackThread(int ti) {
 
     // Fade-out: write FADE_FRAMES ramping from last sample to silence
     if (trk.ringBuf && trk.writtenFrames > 0) {
-        float fadeBuf[FADE_FRAMES * outCh];
+        std::vector<float> fadeBuf(FADE_FRAMES * outCh);
         for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = 1.0f - (float)i / FADE_FRAMES;
+            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
             for (int c = 0; c < outCh; c++)
                 fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
         }
-        trk.ringBuf->push(fadeBuf, FADE_FRAMES, outCh);
+        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, outCh);
     }
 
     // Drain ring buffer so fade-out / last data is consumed before cleanup
@@ -1250,13 +1251,13 @@ void mediaStreamPlaybackThread(int ti) {
 
     // Fade-out: write FADE_FRAMES ramping from last sample to silence
     if (trk.ringBuf && trk.writtenFrames > 0) {
-        float fadeBuf[FADE_FRAMES * outCh];
+        std::vector<float> fadeBuf(FADE_FRAMES * outCh);
         for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = 1.0f - (float)i / FADE_FRAMES;
+            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
             for (int c = 0; c < outCh; c++)
                 fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
         }
-        trk.ringBuf->push(fadeBuf, FADE_FRAMES, outCh);
+        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, outCh);
     }
 
     // Drain ring buffer so fade-out / last data is consumed before cleanup
