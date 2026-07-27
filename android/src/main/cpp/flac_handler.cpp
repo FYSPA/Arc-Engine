@@ -182,6 +182,12 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
 
     trk.writtenFrames += frames;
 
+    // Push position to Dart
+    if (gCtl.sampleRate > 0) {
+        int64_t posMs = trk.writtenFrames.load() * 1000 / gCtl.sampleRate;
+        pushPositionToDart(state->trackIndex, posMs, true, trk.lastCallbackMs, gCtl.dartPort);
+    }
+
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 

@@ -212,6 +212,7 @@ void wavPlaybackThread(int ti) {
             if (pushed > 0) {
                 trk.lastFrame[0] = floatBuf[(pushed - 1) * ch];
                 if (ch > 1) trk.lastFrame[1] = floatBuf[(pushed - 1) * ch + 1];
+                pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / sr, true, trk.lastCallbackMs, gCtl.dartPort);
             }
         }
         if (trk.pcmRingBuf) {
@@ -933,6 +934,7 @@ void mediaPlaybackThread(int ti) {
                     }
                     delete[] fb;
                     trk.writtenFrames += frames;
+                    pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / gCtl.sampleRate, true, trk.lastCallbackMs, gCtl.dartPort);
                 }
             }
             AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
@@ -1187,6 +1189,7 @@ void mediaStreamPlaybackThread(int ti) {
                         AMediaExtractor_advance(extractor);
                         if (trk.totalFrames > 0 && sr > 0 && sampleTime > 0) {
                             trk.writtenFrames = sampleTime * sr / 1000000;
+                            pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / sr, true, trk.lastCallbackMs, gCtl.dartPort);
                         }
                     }
                 }

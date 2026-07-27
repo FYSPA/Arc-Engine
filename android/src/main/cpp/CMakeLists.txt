@@ -33,12 +33,14 @@ add_library(audio_engine SHARED
     limiter.cpp
     compressor.cpp
     reverb.cpp
+    "${CMAKE_SOURCE_DIR}/libs/dart_api_dl.c"
 )
 
 target_compile_definitions(audio_engine PRIVATE __ANDROID_API__=29)
 
 target_include_directories(audio_engine PRIVATE
     "${LIBS_DIR}/include"
+    "/home/yh/development/flutter/bin/cache/dart-sdk/include"
 )
 
 find_library(aaudio-lib aaudio)

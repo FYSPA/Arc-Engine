@@ -9,7 +9,6 @@
 // ---------------------------------------------------------------------------
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:fake_async/fake_async.dart';
 import 'package:arc_engine/arc_engine.dart';
 import 'package:arc_engine/src/ffi_bindings.dart';
 
@@ -165,20 +164,6 @@ void main() {
       tp.seek(const Duration(milliseconds: 300));
       expect(ffi.positions[0], 300);
       expect(tp.position.inMilliseconds, 300);
-    });
-
-    test('Timer polling updates position from FFI', () {
-      // Use fakeAsync to control Timer.periodic
-      FakeAsync().run((async) {
-        final tp = TrackPlayer(0);
-        tp.play('/test/path.wav');
-        expect(tp.state, PlaybackState.playing);
-
-        // Advance time so timer fires and simulates playback
-        ffi.positions[0] = 500;
-        async.elapse(const Duration(milliseconds: 300));
-        expect(tp.position.inMilliseconds, 500);
-      });
     });
 
     test('dispose stops and closes streams', () {

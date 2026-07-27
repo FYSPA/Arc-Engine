@@ -14,6 +14,9 @@
 #include <math.h>
 #include <cstring>
 #include <android/log.h>
+#include <atomic>
+#include <chrono>
+#include <dart_api_dl.h>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AudioEngine", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AudioEngine", __VA_ARGS__)
@@ -158,4 +161,38 @@ static inline void resampleSincStream(float *out, int32_t &outFrames,
     // Save last W samples of current block as overlap for next call
     overlapCount = (inFrames >= SINC_W) ? SINC_W : inFrames;
     memcpy(overlap, in + (inFrames - overlapCount) * channels, overlapCount * channels * sizeof(float));
+}
+
+// ─── Dart position push callback ─────────────────────────────────────────────
+// Sends position updates from decoder threads to Dart via Dart_NativePort.
+// Rate-limited to max 20 callbacks/sec (50ms interval) to avoid flooding.
+// Message format: [trackIndex: int, posMs: int, running: bool]
+
+inline void pushPositionToDart(int32_t trackIndex, int64_t posMs, bool running,
+                               std::atomic<int64_t> &lastCallbackMs, int64_t dartPort) {
+    if (dartPort <= 0) return;
+
+    // Rate limit: 50ms minimum interval
+    auto now = std::chrono::steady_clock::now();
+    int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    int64_t last = lastCallbackMs.load(std::memory_order_relaxed);
+    if (nowMs - last < 50) return;
+    lastCallbackMs.store(nowMs, std::memory_order_relaxed);
+
+    Dart_CObject msg;
+    msg.type = Dart_CObject_kArray;
+    msg.value.as_array.length = 3;
+
+    Dart_CObject e0, e1, e2;
+    e0.type = Dart_CObject_kInt32;
+    e0.value.as_int32 = trackIndex;
+    e1.type = Dart_CObject_kInt64;
+    e1.value.as_int64 = posMs;
+    e2.type = Dart_CObject_kBool;
+    e2.value.as_bool = running;
+
+    Dart_CObject* elements[3] = {&e0, &e1, &e2};
+    msg.value.as_array.values = elements;
+
+    Dart_PostCObject_DL((Dart_Port_DL)dartPort, &msg);
 }

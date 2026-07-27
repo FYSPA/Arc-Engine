@@ -204,7 +204,8 @@ class _HomeScreenState extends State<HomeScreen> {
       bool anyRunning = false;
       for (final t in _tracks) {
         final p = t.player;
-        if (p.state == PlaybackState.playing) {
+        if (p.state == PlaybackState.playing ||
+            p.state == PlaybackState.paused) {
           anyRunning = true;
           t.running = true;
           t.position = p.position.inMilliseconds;

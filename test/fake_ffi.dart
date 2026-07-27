@@ -266,6 +266,12 @@ class FakeFfi implements FfiInterface {
   void trackClearNext(int index) {}
 
   @override
+  void trackRegisterCallback(int portId) {}
+
+  @override
+  void trackInitDartApiDl(Pointer<Void> data) {}
+
+  @override
   int trackGetPcmAvailable(int index) => _pcmAvailable;
 
   @override

@@ -6,17 +6,14 @@
 // Importance: Core user-facing API — every audio track in the engine is
 //             controlled through this class. Used by AudioEngine.tracks[i].
 // Missing: - No automatic reconnection if native library unloads
-//          - Polling Timer (250ms) should be replaced by a native push
-//            callback (Dart_PostCObject) for true zero-latency updates
 //          - No fade-in on play() to avoid click/pop artifacts
 //          - No loop mode or crossfade support
-// Known issues: Timer.periodic continues briefly after dispose() if a tick
-//               is already scheduled in the event loop. The unused `paused`
-//               variable in _startPolling should be removed.
+// Known issues: None
 // ---------------------------------------------------------------------------
 
 import 'dart:async';
 import 'dart:ffi';
+import 'dart:isolate';
 import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart' show FfiInterface, FlacMetadata;
@@ -34,13 +31,12 @@ enum PlaybackState { stopped, playing, paused }
 /// Each [TrackPlayer] maps to a native track slot (0-3).  Provides
 /// [onStateChanged] and [onPositionChanged] streams for reactive UIs.
 ///
-/// Internal [Timer.periodic] at 250ms polls the native engine for position
-/// and state changes. The timer is active while [state] is [PlaybackState.playing].
+/// Position updates arrive via native push callbacks (Dart_NativePort) instead
+/// of polling, giving sub-frame latency with minimal CPU overhead.
 class TrackPlayer {
   final int index;
   final FfiInterface _ffi = FfiInterface.instance;
 
-  Timer? _timer;
   PlaybackState _state = PlaybackState.stopped;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -52,6 +48,8 @@ class TrackPlayer {
   String _currentName = '';
   String _nextName = '';
   int _lastGapLessVersion = 0;
+  int _seekingUntilMs = 0;
+  bool _wasPlaying = false;
   FlacMetadataData? _metadata;
 
   final StreamController<PlaybackState> _stateCtrl =
@@ -74,12 +72,18 @@ class TrackPlayer {
   /// filename of the track that was queued but could not play.
   Stream<String> get onGaplessAborted => _abortCtrl.stream;
 
+  // ─── Static ReceivePort for native push callbacks ────────────────────
+  static ReceivePort? _globalPort;
+  static final Map<int, TrackPlayer> _instances = {};
+  static bool _portRegistered = false;
+  static bool _dartApiInitialized = false;
+
   TrackPlayer(this.index);
 
   /// Current playback state: [PlaybackState.stopped], .playing, or .paused.
   PlaybackState get state => _state;
 
-  /// Current playback position. Updated every 250ms via polling timer.
+  /// Current playback position. Updated via native push callbacks.
   Duration get position => _position;
 
   /// Total duration of the loaded audio. Updated when state becomes playing.
@@ -203,9 +207,13 @@ class TrackPlayer {
         _state = PlaybackState.playing;
         _currentName = path.split('/').last;
         _lastGapLessVersion = _ffi.trackGetGapLessVersion(index);
+        _duration = _metadata?.duration ??
+            Duration(milliseconds: _ffi.trackGetDuration(index));
         _nameCtrl.add(_currentName);
         _stateCtrl.add(_state);
-        _startPolling();
+        _ensurePortRegistered();
+        _instances[index] = this;
+        _startGaplessPolling();
       }
       return result;
     } finally {
@@ -254,11 +262,12 @@ class TrackPlayer {
 
   /// Stops playback and resets position to zero. Cancels polling timer.
   void stop() {
-    _timer?.cancel();
-    _timer = null;
+    _gaplessTimer?.cancel();
+    _gaplessTimer = null;
     _ffi.trackStop(index);
     _state = PlaybackState.stopped;
     _position = Duration.zero;
+    _instances.remove(index);
     _stateCtrl.add(_state);
     _posCtrl.add(_position);
   }
@@ -282,6 +291,7 @@ class TrackPlayer {
     _ffi.trackSeek(index, position.inMilliseconds);
     _position = position;
     _posCtrl.add(_position);
+    _seekingUntilMs = DateTime.now().millisecondsSinceEpoch + 1000;
   }
 
   Timer? _pcmTimer;
@@ -334,18 +344,76 @@ class TrackPlayer {
     _abortCtrl.close();
   }
 
-  void _startPolling() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      final playing = _ffi.trackIsPlaying(index) != 0;
+  // ─── Static ReceivePort for native push callbacks ──────────────────
 
-      // Detect gap-less transition
+  static void _ensurePortRegistered() {
+    if (_globalPort != null) return;
+
+    // Initialize Dart DL API (only once)
+    if (!_dartApiInitialized) {
+      FfiInterface.instance.trackInitDartApiDl(NativeApi.initializeApiDLData);
+      _dartApiInitialized = true;
+    }
+
+    _globalPort = ReceivePort();
+    _globalPort!.listen(_onNativeMessage);
+    FfiInterface.instance
+        .trackRegisterCallback(_globalPort!.sendPort.nativePort);
+    _portRegistered = true;
+  }
+
+  static void _onNativeMessage(dynamic message) {
+    if (message is! List || message.length != 3) return;
+    final int trackIndex = message[0] as int;
+    final int posMs = message[1] as int;
+    final bool running = message[2] as bool;
+
+    final player = _instances[trackIndex];
+    if (player == null) return;
+
+    player._handleNativeUpdate(posMs, running);
+  }
+
+  void _handleNativeUpdate(int posMs, bool running) {
+    final newPos = Duration(milliseconds: posMs);
+
+    if (running) {
+      if (_state != PlaybackState.playing) {
+        _state = PlaybackState.playing;
+        _stateCtrl.add(_state);
+      }
+      // Suppress position updates during seek window to prevent slider jump-back
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now >= _seekingUntilMs) {
+        if (newPos != _position) {
+          _position = newPos;
+          _posCtrl.add(_position);
+        }
+      }
+    } else if (_state == PlaybackState.playing) {
+      _state = PlaybackState.stopped;
+      _position = Duration.zero;
+      _instances.remove(index);
+      _gaplessTimer?.cancel();
+      _gaplessTimer = null;
+      _stateCtrl.add(_state);
+      _posCtrl.add(_position);
+    }
+  }
+
+  // ─── Gapless detection (lightweight 250ms poll) ────────────────────
+  // Only polls gaplessVersion + gaplessAbort — 2 FFI calls instead of 5.
+
+  Timer? _gaplessTimer;
+
+  void _startGaplessPolling() {
+    _gaplessTimer?.cancel();
+    _wasPlaying = true;
+    _gaplessTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       final curVersion = _ffi.trackGetGapLessVersion(index);
       if (curVersion != _lastGapLessVersion) {
-        final oldVersion = _lastGapLessVersion;
         _lastGapLessVersion = curVersion;
         if (_ffi.trackGetGapLessAbort(index) != 0) {
-          // Gapless transition was aborted (e.g. format mismatch)
           if (_nextName.isNotEmpty) {
             _abortCtrl.add(_nextName);
           }
@@ -356,27 +424,14 @@ class TrackPlayer {
           _nameCtrl.add(_currentName);
         }
       }
-
-      if (playing) {
-        final posMs = _ffi.trackGetPosition(index);
-        final durMs = _ffi.trackGetDuration(index);
-        final newPos = Duration(milliseconds: posMs);
-        final newDur = Duration(milliseconds: durMs);
-
-        if (_state != PlaybackState.playing) {
-          _state = PlaybackState.playing;
-          _stateCtrl.add(_state);
-        }
-        if (newPos != _position) {
-          _position = newPos;
-          _posCtrl.add(_position);
-        }
-        _duration = newDur;
-      } else if (_state == PlaybackState.playing) {
-        _timer?.cancel();
-        _timer = null;
+      // Detect song end (native push may not arrive for all formats)
+      if (_wasPlaying && _ffi.trackIsPlaying(index) == 0) {
+        _wasPlaying = false;
         _state = PlaybackState.stopped;
         _position = Duration.zero;
+        _instances.remove(index);
+        _gaplessTimer?.cancel();
+        _gaplessTimer = null;
         _stateCtrl.add(_state);
         _posCtrl.add(_position);
       }

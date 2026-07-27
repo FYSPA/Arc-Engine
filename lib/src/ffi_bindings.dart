@@ -163,6 +163,10 @@ abstract class FfiInterface {
   void limiterSetEnabled(int enabled);
   void limiterSetThreshold(double db);
 
+  // ─── Native position push ──────────────────────────────────────────
+  void trackRegisterCallback(int portId);
+  void trackInitDartApiDl(Pointer<Void> data);
+
   static FfiInterface get instance => FfiBindings.instance;
   static set instance(FfiInterface v) => FfiBindings._instanceForTest = v;
 }
@@ -524,4 +528,17 @@ final class FfiBindings implements FfiInterface {
   late final _limiterSetThreshold =
       _lib.lookupFunction<Void Function(Float), void Function(double)>(
           'limiter_set_threshold');
+
+  // ─── Native position push ──────────────────────────────────────────
+  @override
+  void trackRegisterCallback(int portId) => _trackRegisterCallback(portId);
+  late final _trackRegisterCallback =
+      _lib.lookupFunction<Void Function(Int64), void Function(int)>(
+          'track_register_callback');
+
+  @override
+  void trackInitDartApiDl(Pointer<Void> data) => _trackInitDartApiDl(data);
+  late final _trackInitDartApiDl = _lib.lookupFunction<
+      Void Function(Pointer<Void>),
+      void Function(Pointer<Void>)>('track_init_dart_api_dl');
 }

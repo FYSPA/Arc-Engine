@@ -398,6 +398,18 @@ EXPORT void engine_set_crossfade_ms(int32_t ms) {
     LOGI("engine_set_crossfade_ms: %d ms", v);
 }
 
+// ─── Dart DL API init + native position push ───────────────────────────────
+
+EXPORT void track_init_dart_api_dl(void* data) {
+    Dart_InitializeApiDL(data);
+    LOGI("track_init_dart_api_dl: initialized");
+}
+
+EXPORT void track_register_callback(int64_t port) {
+    gCtl.dartPort = port;
+    LOGI("track_register_callback: port=%lld", (long long)port);
+}
+
 // ─── EQ control exports ─────────────────────────────────────────────────────
 
 EXPORT void eq_set_band(int32_t index, int32_t type, double freq, double gain, double q) {

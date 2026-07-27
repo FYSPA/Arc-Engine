@@ -465,7 +465,7 @@ class _EqDialogState extends State<EqDialog> {
                 builder: (_, constraints) => SizedBox(
                   height: 140,
                   width: constraints.maxWidth,
-                  child: _buildCurve(constraints.biggest),
+                  child: _buildCurve(Size(constraints.maxWidth, 140)),
                 ),
               ),
               const SizedBox(height: 8),

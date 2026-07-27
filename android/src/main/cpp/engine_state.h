@@ -87,6 +87,9 @@ struct TrackState {
     // Overlap buffer for block-continuous sinc resampling (W=8 samples per channel)
     float resampleOverlap[8 * MAX_CHANNELS]{0};
     int32_t resampleOverlapCount{0};  // 0 = first block, 8 = subsequent blocks
+
+    // Rate-limit for Dart position push callbacks (max 20/sec)
+    std::atomic<int64_t> lastCallbackMs{0};
 };
 
 // ─── Crossfade helpers (inline, after TrackState is complete) ─────────────────
@@ -141,6 +144,9 @@ struct EngineState {
 
     // AAudio stream disconnect detection
     std::atomic<int> streamDisconnected{0};
+
+    // Dart Native Port for position push callbacks
+    int64_t dartPort{0};
 };
 
 extern EngineState gCtl;
