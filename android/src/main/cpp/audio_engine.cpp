@@ -221,7 +221,9 @@ EXPORT void stop_audio() {
 }
 
 EXPORT void pause_audio() {
-    gCtl.tracks[0].paused = true;
+    TrackState &trk = gCtl.tracks[0];
+    trk.paused = true;
+    if (trk.ringBuf) trk.ringBuf->reset();
 }
 
 EXPORT void resume_audio() {
@@ -297,8 +299,10 @@ EXPORT void track_stop(int32_t index) {
 }
 
 EXPORT void track_pause(int32_t index) {
-    if (index >= 0 && index < MAX_TRACKS)
-        gCtl.tracks[index].paused = true;
+    if (index < 0 || index >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[index];
+    trk.paused = true;
+    if (trk.ringBuf) trk.ringBuf->reset();
 }
 
 EXPORT void track_resume(int32_t index) {

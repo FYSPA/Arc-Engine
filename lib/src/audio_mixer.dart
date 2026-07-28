@@ -201,8 +201,18 @@ class AudioEngine {
   }
 
   static void stop() => _t0.stop();
-  static void pause() => _t0.pause();
-  static void resume() => _t0.resume();
+  static void pause() {
+    for (final t in instance.tracks) {
+      if (t.state == PlaybackState.playing) t.pause();
+    }
+  }
+
+  static void resume() {
+    for (final t in instance.tracks) {
+      if (t.state == PlaybackState.paused) t.resume();
+    }
+  }
+
   static int seek(int positionMs) {
     _t0.seek(Duration(milliseconds: positionMs));
     return 0;

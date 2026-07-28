@@ -292,7 +292,7 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         // Analyze static waveform for seek visualization
         if (wt.waveformPeaks.isEmpty) {
-          final peaks = player.analyzeWaveform(numBars: 500);
+          final peaks = player.analyzeWaveform(numBars: 100);
           if (mounted && peaks.isNotEmpty) {
             setState(() {
               wt.waveformPeaks = peaks;
@@ -361,7 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
     trackUi.sliderValue = 0.0;
     // Re-analyze waveform for the new song
     final player = trackUi.player;
-    final peaks = player.analyzeWaveform(numBars: 500);
+    final peaks = player.analyzeWaveform(numBars: 100);
     if (mounted && peaks.isNotEmpty) {
       setState(() {
         trackUi.waveformPeaks = peaks;
