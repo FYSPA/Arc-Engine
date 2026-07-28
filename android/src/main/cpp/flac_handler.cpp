@@ -120,7 +120,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                     oldCount = outFrames;
                 }
             }
-            // Mix old + new with crossfade curves
+            // Mix old + new with S-Curve (smoothstep) crossfade
             int32_t fadeLen = trk.fadeLen.load();
             int32_t remaining = trk.crossfadeRemaining.load();
             int32_t mixCount = std::min(oldCount, remaining);
@@ -129,8 +129,11 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             std::vector<float> mixed(mixCount * channels);
             for (int32_t i = 0; i < mixCount; i++) {
                 float t = (float)(startPos + i) / fadeLen;
-                float fadeOut = cosf(t * 1.57079632679f);
-                float fadeIn = sinf(t * 1.57079632679f);
+                // Smoothstep S-Curve: even perceptual distribution
+                float t2 = t * t;
+                float t3 = t2 * t;
+                float fadeOut = 1.0f - 3.0f * t2 + 2.0f * t3;
+                float fadeIn = 3.0f * t2 - 2.0f * t3;
                 for (int32_t c = 0; c < channels; c++) {
                     float o = oldFrames[i * channels + c] * fadeOut;
                     float n = trk.preBuf[trk.crossfadePreBufPos * channels + c] * fadeIn;
@@ -139,6 +142,12 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                     mixed[i * channels + c] = m;
                 }
                 trk.crossfadePreBufPos++;
+            }
+            // Apply crossfade volume multiplier
+            float cv = gCtl.crossfadeVolume.load(std::memory_order_relaxed);
+            if (cv < 1.0f) {
+                for (int32_t i = 0; i < mixCount * channels; i++)
+                    mixed[i] *= cv;
             }
             trk.ringBuf->push(mixed.data(), mixCount, channels);
             trk.crossfadeRemaining -= mixCount;
@@ -175,6 +184,12 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
         } else {
             updateFadeHistory(trk, floatBuf.data(), frames, channels);
             applyFadeIn(trk, floatBuf.data(), frames, channels);
+            // Apply crossfade volume multiplier
+            float cv = gCtl.crossfadeVolume.load(std::memory_order_relaxed);
+            if (cv < 1.0f) {
+                for (int32_t i = 0; i < frames * channels; i++)
+                    floatBuf[i] *= cv;
+            }
             trk.ringBuf->push(floatBuf.data(), frames, channels);
             trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];

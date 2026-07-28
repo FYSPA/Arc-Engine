@@ -361,6 +361,49 @@ class _CrossfadeVisualizerState extends State<CrossfadeVisualizer> {
               ),
             ],
           ),
+          // ─── Crossfade volume slider ───────────────────
+          Row(
+            children: [
+              Icon(Icons.volume_down,
+                  size: 14, color: Colors.white.withValues(alpha: 0.35)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 5),
+                    overlayShape:
+                        const RoundSliderOverlayShape(overlayRadius: 10),
+                    activeTrackColor: const Color(0xFFFF9800),
+                    inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
+                    thumbColor: const Color(0xFFFF9800),
+                    overlayColor:
+                        const Color(0xFFFF9800).withValues(alpha: 0.08),
+                  ),
+                  child: Slider(
+                    value: AudioEngine.crossfadeVolume,
+                    min: 0.0,
+                    max: 1.0,
+                    divisions: 20,
+                    onChanged: (v) =>
+                        setState(() => AudioEngine.crossfadeVolume = v),
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 36,
+                child: Text(
+                  '${(AudioEngine.crossfadeVolume * 100).round()}%',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontFamily: 'monospace',
+                  ),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );

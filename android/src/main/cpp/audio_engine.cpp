@@ -422,6 +422,11 @@ EXPORT void engine_set_crossfade_ms(int32_t ms) {
     LOGI("engine_set_crossfade_ms: %d ms", v);
 }
 
+EXPORT void engine_set_crossfade_volume(float vol) {
+    float v = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
+    gCtl.crossfadeVolume.store(v, std::memory_order_release);
+}
+
 // ─── Dart DL API init + native position push ───────────────────────────────
 
 EXPORT void track_init_dart_api_dl(void* data) {

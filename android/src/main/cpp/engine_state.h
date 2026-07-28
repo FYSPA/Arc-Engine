@@ -106,7 +106,7 @@ inline void updateFadeHistory(TrackState &trk, const float *buf, int32_t frames,
 }
 
 // Apply fade-in gain ramp (0→1) over fadeLen when crossfading.
-// Uses sin/cos equal-power curve matching writeGaplessCrossfade for continuity.
+// Uses smoothstep S-Curve for even perceptual distribution.
 inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch) {
     if (!trk.crossfading || trk.fadeLen <= 0) return;
     int32_t fadeLen = trk.fadeLen.load();
@@ -117,8 +117,10 @@ inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch)
             trk.crossfadeRemaining = 0;
             return;
         }
-        float angle = ((float)(fadeLen - rem) / fadeLen) * 1.57079632679f;
-        float g = sinf(angle);
+        float t = (float)(fadeLen - rem) / fadeLen;
+        float t2 = t * t;
+        float t3 = t2 * t;
+        float g = 3.0f * t2 - 2.0f * t3;  // smoothstep fade-in
         for (int32_t c = 0; c < ch; c++)
             buf[i * ch + c] *= g;
         trk.crossfadeRemaining--;
@@ -141,6 +143,7 @@ struct EngineState {
 
     float masterVolume{1.0f};
     std::atomic<int32_t> crossfadeMs{3000};  // default 3000ms (Spotify-style), converted to frames by crossfadeMsToFrames()
+    std::atomic<float> crossfadeVolume{1.0f};  // volume multiplier during crossfade zone (0.0-1.0)
 
     // AAudio stream disconnect detection
     std::atomic<int> streamDisconnected{0};

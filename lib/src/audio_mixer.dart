@@ -132,6 +132,15 @@ class AudioEngine {
     FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
   }
 
+  /// Volume multiplier during crossfade zone (0.0–1.0).
+  /// Controls how loud the overlapping section sounds.
+  static double get crossfadeVolume => _crossfadeVolume;
+  static double _crossfadeVolume = 1.0;
+  static set crossfadeVolume(double v) {
+    _crossfadeVolume = v.clamp(0.0, 1.0);
+    FfiInterface.instance.engineSetCrossfadeVolume(_crossfadeVolume);
+  }
+
   Stream<List<double>> startPcmStream({
     Duration interval = const Duration(milliseconds: 50),
   }) =>
