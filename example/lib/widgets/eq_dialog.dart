@@ -599,7 +599,7 @@ class _EqDialogState extends State<EqDialog> {
                                 ),
                               ),
                               SizedBox(
-                                width: 30,
+                                width: 28,
                                 child: Text(
                                   '${_gains[i].toStringAsFixed(0)} dB',
                                   style: TextStyle(

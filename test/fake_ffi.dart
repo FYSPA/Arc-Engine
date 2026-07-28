@@ -291,4 +291,34 @@ class FakeFfi implements FfiInterface {
     }
     return 0;
   }
+
+  @override
+  int exportMixToWav(Pointer<Utf8> outputPath, int sampleRate, int bitDepth) =>
+      0;
+
+  @override
+  int convertFileToWav(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+          int sampleRate, int bitDepth) =>
+      0;
+
+  @override
+  int exportMixStart(Pointer<Utf8> outputPath, int sampleRate, int bitDepth) =>
+      0;
+
+  @override
+  int convertFileStart(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+          int sampleRate, int bitDepth) =>
+      0;
+
+  @override
+  int exportGetStatus() => 2;
+
+  @override
+  double exportGetProgress() => 1.0;
+
+  @override
+  int exportGetResult() => 0;
+
+  @override
+  void exportCleanup() {}
 }

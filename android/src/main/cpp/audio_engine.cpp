@@ -18,6 +18,8 @@
 #include "compressor.h"
 #include "reverb.h"
 #include "aaudio_utils.h"
+#include "export_mix.h"
+#include "export_async.h"
 #include "flac_handler.h"
 #include "wav_handler.h"
 
@@ -338,6 +340,21 @@ EXPORT int32_t track_is_playing(int32_t index) {
     return gCtl.tracks[index].running ? 1 : 0;
 }
 
+EXPORT int32_t track_is_crossfading(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].crossfading.load(std::memory_order_relaxed);
+}
+
+EXPORT int32_t track_get_crossfade_remaining(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].crossfadeRemaining.load(std::memory_order_relaxed);
+}
+
+EXPORT int32_t track_get_fade_len(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].fadeLen.load(std::memory_order_relaxed);
+}
+
 EXPORT void track_set_volume(int32_t index, float vol) {
     if (index >= 0 && index < MAX_TRACKS)
         gCtl.tracks[index].volume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
@@ -400,7 +417,7 @@ EXPORT void mixer_set_master_volume(float vol) {
 }
 
 EXPORT void engine_set_crossfade_ms(int32_t ms) {
-    int32_t v = ms < 0 ? 0 : (ms > 5000 ? 5000 : ms);
+    int32_t v = ms < 0 ? 0 : (ms > 10000 ? 10000 : ms);
     gCtl.crossfadeMs.store(v, std::memory_order_release);
     LOGI("engine_set_crossfade_ms: %d ms", v);
 }
@@ -579,6 +596,89 @@ EXPORT void reverb_set_pre_delay(float ms) {
     if (!gCtl.fxChain) return;
     AudioEffect *fx = gCtl.fxChain->find("reverb");
     if (fx) static_cast<Reverb*>(fx)->setPreDelayMs(ms);
+}
+
+// ─── WAV Export ────────────────────────────────────────────────────────
+
+EXPORT int32_t export_mix_to_wav(const char *outputPath, int32_t sampleRate, int32_t bitDepth) {
+    if (!outputPath || !outputPath[0]) return -1;
+    if (sampleRate <= 0) sampleRate = 44100;
+    if (bitDepth != 16 && bitDepth != 24) bitDepth = 24;
+
+    ExportConfig config;
+    config.outputPath = outputPath;
+    config.outputSampleRate = sampleRate;
+    config.outputBitDepth = bitDepth;
+    config.outputChannels = 2;
+
+    return exportMixToWav(config);
+}
+
+// ─── Single-file conversion to WAV ──────────────────────────────────────
+
+EXPORT int32_t convert_file_to_wav(const char *inputPath, const char *outputPath,
+                                   int32_t outputSampleRate, int32_t outputBitDepth) {
+    if (!inputPath || !inputPath[0]) return -1;
+    if (!outputPath || !outputPath[0]) return -2;
+    if (outputSampleRate <= 0) outputSampleRate = 44100;
+    if (outputBitDepth != 16 && outputBitDepth != 24) outputBitDepth = 24;
+
+    // Detect format by extension
+    const char *ext = strrchr(inputPath, '.');
+    if (!ext) return -3;
+    ext++;  // skip dot
+
+    DecodedAudio decoded;
+    int32_t rc = -4;
+
+    if (strcasecmp(ext, "flac") == 0) {
+        rc = decodeFlacFull(inputPath, decoded);
+    } else if (strcasecmp(ext, "wav") == 0) {
+        rc = decodeWavFull(inputPath, decoded);
+    } else if (strcasecmp(ext, "mp3") == 0 || strcasecmp(ext, "aac") == 0 ||
+               strcasecmp(ext, "m4a") == 0 || strcasecmp(ext, "ogg") == 0 ||
+               strcasecmp(ext, "opus") == 0) {
+        rc = decodeMediaFull(inputPath, decoded);
+    } else {
+        return -5;  // unsupported format
+    }
+
+    if (rc != 0 || decoded.frames <= 0) {
+        decoded.free();
+        return -6;
+    }
+
+    const int32_t outSR = outputSampleRate;
+    const int32_t ch = decoded.channels;
+
+    // Resample if source SR differs from output SR
+    if (decoded.sampleRate != outSR && decoded.sampleRate > 0) {
+        double ratio = (double)outSR / decoded.sampleRate;
+        int32_t outFrames = (int32_t)(decoded.frames * ratio);
+        float *resampled = new float[outFrames * ch];
+        resampleSinc(resampled, outFrames, decoded.data, decoded.frames, ch, ratio);
+        decoded.free();
+        decoded.data = resampled;
+        decoded.frames = outFrames;
+    }
+
+    // Write WAV
+    WavWriter writer;
+    if (!writer.open(outputPath, ch, outSR, outputBitDepth)) {
+        decoded.free();
+        return -7;
+    }
+
+    const int32_t BLOCK = 4096;
+    int32_t written = 0;
+    while (written < decoded.frames) {
+        int32_t blockFrames = std::min(BLOCK, decoded.frames - written);
+        writer.writeBlock(decoded.data + written * ch, blockFrames);
+        written += blockFrames;
+    }
+    writer.close();
+    decoded.free();
+    return 0;
 }
 
 }

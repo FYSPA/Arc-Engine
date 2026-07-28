@@ -116,6 +116,9 @@ abstract class FfiInterface {
   int trackGetPosition(int index);
   int trackGetDuration(int index);
   int trackIsPlaying(int index);
+  int trackIsCrossfading(int index);
+  int trackGetCrossfadeRemaining(int index);
+  int trackGetFadeLen(int index);
   void trackSetVolume(int index, double vol);
   void trackSetPan(int index, double pan);
   void trackSetMute(int index, int mute);
@@ -169,6 +172,20 @@ abstract class FfiInterface {
 
   // ─── Waveform analysis ───────────────────────────────────────────
   int trackAnalyzeWaveform(int index, int numBars, Pointer<Float> outPeaks);
+
+  // ─── WAV export ──────────────────────────────────────────────────
+  int exportMixToWav(Pointer<Utf8> outputPath, int sampleRate, int bitDepth);
+  int convertFileToWav(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+      int sampleRate, int bitDepth);
+
+  // ─── Async export (C++ pthread) ─────────────────────────────────
+  int exportMixStart(Pointer<Utf8> outputPath, int sampleRate, int bitDepth);
+  int convertFileStart(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+      int sampleRate, int bitDepth);
+  int exportGetStatus();
+  double exportGetProgress();
+  int exportGetResult();
+  void exportCleanup();
 
   static FfiInterface get instance => FfiBindings.instance;
   static set instance(FfiInterface v) => FfiBindings._instanceForTest = v;
@@ -307,6 +324,25 @@ final class FfiBindings implements FfiInterface {
   late final _trackIsPlaying =
       _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
           'track_is_playing');
+
+  @override
+  int trackIsCrossfading(int index) => _trackIsCrossfading(index);
+  late final _trackIsCrossfading =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_is_crossfading');
+
+  @override
+  int trackGetCrossfadeRemaining(int index) =>
+      _trackGetCrossfadeRemaining(index);
+  late final _trackGetCrossfadeRemaining =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_crossfade_remaining');
+
+  @override
+  int trackGetFadeLen(int index) => _trackGetFadeLen(index);
+  late final _trackGetFadeLen =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_fade_len');
 
   @override
   void trackSetVolume(int index, double vol) => _trackSetVolume(index, vol);
@@ -552,4 +588,59 @@ final class FfiBindings implements FfiInterface {
   late final _trackAnalyzeWaveform = _lib.lookupFunction<
       Int32 Function(Int32, Int32, Pointer<Float>),
       int Function(int, int, Pointer<Float>)>('track_analyze_waveform');
+
+  // ─── WAV export ──────────────────────────────────────────────────
+  @override
+  int exportMixToWav(Pointer<Utf8> outputPath, int sampleRate, int bitDepth) =>
+      _exportMixToWav(outputPath, sampleRate, bitDepth);
+  late final _exportMixToWav = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Int32, Int32),
+      int Function(Pointer<Utf8>, int, int)>('export_mix_to_wav');
+
+  @override
+  int convertFileToWav(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+          int sampleRate, int bitDepth) =>
+      _convertFileToWav(inputPath, outputPath, sampleRate, bitDepth);
+  late final _convertFileToWav = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32, Int32),
+      int Function(
+          Pointer<Utf8>, Pointer<Utf8>, int, int)>('convert_file_to_wav');
+
+  // ─── Async export (C++ pthread) ─────────────────────────────────
+  @override
+  int exportMixStart(Pointer<Utf8> outputPath, int sampleRate, int bitDepth) =>
+      _exportMixStart(outputPath, sampleRate, bitDepth);
+  late final _exportMixStart = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Int32, Int32),
+      int Function(Pointer<Utf8>, int, int)>('export_mix_start');
+
+  @override
+  int convertFileStart(Pointer<Utf8> inputPath, Pointer<Utf8> outputPath,
+          int sampleRate, int bitDepth) =>
+      _convertFileStart(inputPath, outputPath, sampleRate, bitDepth);
+  late final _convertFileStart = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32, Int32),
+      int Function(
+          Pointer<Utf8>, Pointer<Utf8>, int, int)>('convert_file_start');
+
+  @override
+  int exportGetStatus() => _exportGetStatus();
+  late final _exportGetStatus = _lib
+      .lookupFunction<Int32 Function(), int Function()>('export_get_status');
+
+  @override
+  double exportGetProgress() => _exportGetProgress();
+  late final _exportGetProgress =
+      _lib.lookupFunction<Float Function(), double Function()>(
+          'export_get_progress');
+
+  @override
+  int exportGetResult() => _exportGetResult();
+  late final _exportGetResult = _lib
+      .lookupFunction<Int32 Function(), int Function()>('export_get_result');
+
+  @override
+  void exportCleanup() => _exportCleanup();
+  late final _exportCleanup =
+      _lib.lookupFunction<Void Function(), void Function()>('export_cleanup');
 }

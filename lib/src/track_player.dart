@@ -104,6 +104,21 @@ class TrackPlayer {
   /// Whether this track loops (repeats from beginning when finished).
   bool get loop => _loop;
 
+  /// Name of the next track queued for gapless transition. Empty if none.
+  String get nextName => _nextName;
+
+  /// Name of the currently playing track. Empty if none.
+  String get currentName => _currentName;
+
+  /// Whether a crossfade is currently active on this track.
+  bool get isCrossfading => _ffi.trackIsCrossfading(index) != 0;
+
+  /// Number of frames remaining in the current crossfade (0 if not crossfading).
+  int get crossfadeRemaining => _ffi.trackGetCrossfadeRemaining(index);
+
+  /// Total crossfade length in frames (set from crossfadeMs).
+  int get fadeLen => _ffi.trackGetFadeLen(index);
+
   /// Full FLAC metadata for the current track (null if not loaded or not FLAC).
   FlacMetadataData? get metadata => _metadata;
 

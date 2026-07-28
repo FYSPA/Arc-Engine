@@ -22,6 +22,7 @@ import 'status_display.dart';
 import 'pcm_visualizer.dart';
 import 'waveform_widget.dart';
 import 'eq_dialog.dart';
+import 'crossfade_visualizer.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -403,6 +404,38 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _convertFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      dialogTitle: 'Select file to convert to WAV',
+    );
+    if (result == null || result.files.isEmpty) return;
+    final inputPath = result.files.first.path;
+    if (inputPath == null) return;
+
+    // Pick output directory
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Save WAV in',
+    );
+    if (dir == null) return;
+
+    final fileName = '${inputPath.split('/').last.split('.').first}.wav';
+    final wavPath = '$dir/$fileName';
+
+    if (mounted) setState(() => _status = 'Converting...');
+    try {
+      final rc = await AudioEngine.convertFileToWav(inputPath, wavPath);
+      if (mounted) {
+        setState(() {
+          _status =
+              rc == 0 ? 'Converted: $wavPath' : 'Convert failed: error $rc';
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _status = 'Convert error: $e');
+    }
+  }
+
   static const String _defaultStreamUrl =
       'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
 
@@ -654,66 +687,96 @@ class _HomeScreenState extends State<HomeScreen> {
               letterSpacing: -0.5,
             ),
           ),
-          const Spacer(),
-          OutlinedButton.icon(
-            onPressed: _showStreamUrlDialog,
-            icon: const Icon(Icons.cloud_download_rounded, size: 16),
-            label: const Text('Stream', style: TextStyle(fontSize: 12)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              side: BorderSide(
-                color: Colors.white.withValues(alpha: 0.12),
-              ),
-            ),
-          ),
           const SizedBox(width: 8),
-          OutlinedButton.icon(
-            onPressed: _pickAudioFiles,
-            icon: const Icon(Icons.add_rounded, size: 16),
-            label: const Text('Files', style: TextStyle(fontSize: 12)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              side: BorderSide(
-                color: Colors.white.withValues(alpha: 0.12),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          OutlinedButton.icon(
-            onPressed: _pickAndPlayTrack,
-            icon: const Icon(Icons.queue_music_rounded, size: 16),
-            label: const Text('+Track', style: TextStyle(fontSize: 12)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              side: BorderSide(
-                color: Colors.white.withValues(alpha: 0.12),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          OutlinedButton.icon(
-            onPressed: () => showDialog(
-              context: context,
-              builder: (_) => const EqDialog(),
-            ),
-            icon: const Icon(Icons.tune_rounded, size: 16),
-            label: const Text('EQ', style: TextStyle(fontSize: 12)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              side: BorderSide(
-                color: Colors.white.withValues(alpha: 0.12),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _showStreamUrlDialog,
+                    icon: const Icon(Icons.cloud_download_rounded, size: 16),
+                    label: const Text('Stream', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _pickAudioFiles,
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('Files', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _pickAndPlayTrack,
+                    icon: const Icon(Icons.queue_music_rounded, size: 16),
+                    label: const Text('+Track', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => showDialog(
+                      context: context,
+                      builder: (_) => const EqDialog(),
+                    ),
+                    icon: const Icon(Icons.tune_rounded, size: 16),
+                    label: const Text('EQ', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _convertFile,
+                    icon: const Icon(Icons.save_alt_rounded, size: 16),
+                    label: const Text('Export', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -1117,6 +1180,49 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 6),
+                const Divider(height: 1, color: Colors.white12),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final dir = await FilePicker.platform.getDirectoryPath(
+                        dialogTitle: 'Export Mix to',
+                      );
+                      if (dir == null) return;
+                      final wavPath = '$dir/mix.wav';
+                      if (!mounted) return;
+                      setState(() => _status = 'Exporting mix...');
+                      try {
+                        final rc = await AudioEngine.exportToWav(wavPath);
+                        if (mounted) {
+                          setState(() {
+                            _status = rc == 0
+                                ? 'Exported: $wavPath'
+                                : 'Export failed: error $rc';
+                          });
+                        }
+                      } catch (e) {
+                        if (mounted)
+                          setState(() => _status = 'Export error: $e');
+                      }
+                    },
+                    icon: const Icon(Icons.queue_music_rounded, size: 16),
+                    label: const Text('Export Mix',
+                        style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ],
@@ -1749,50 +1855,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 6),
             const Divider(height: 1, color: Colors.white12),
             const SizedBox(height: 6),
-            Row(
-              children: [
-                Text('Crossfade',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.white.withValues(alpha: 0.5))),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: SizedBox(
-                    height: 22,
-                    child: SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: 2,
-                        thumbShape:
-                            const RoundSliderThumbShape(enabledThumbRadius: 5),
-                        overlayShape:
-                            const RoundSliderOverlayShape(overlayRadius: 8),
-                      ),
-                      child: Slider(
-                        value: AudioEngine.crossfadeMs,
-                        min: 0.0,
-                        max: 5000.0,
-                        divisions: 100,
-                        onChanged: (v) =>
-                            setState(() => AudioEngine.crossfadeMs = v),
-                      ),
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 36,
-                  child: Text(
-                    AudioEngine.crossfadeMs == 0
-                        ? 'Off'
-                        : '${AudioEngine.crossfadeMs.toStringAsFixed(0)}ms',
-                    style: TextStyle(
-                      fontSize: 9,
-                      color: Colors.white.withValues(alpha: 0.4),
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ),
-              ],
-            ),
+            CrossfadeVisualizer(player: AudioEngine.instance.tracks[0]),
             const SizedBox(height: 6),
             const Divider(height: 1, color: Colors.white12),
             const SizedBox(height: 6),

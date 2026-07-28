@@ -128,7 +128,7 @@ class AudioEngine {
   static double get crossfadeMs => _crossfadeMs;
   static double _crossfadeMs = 3000.0;
   static set crossfadeMs(double v) {
-    _crossfadeMs = v.clamp(0.0, 5000.0);
+    _crossfadeMs = v.clamp(0.0, 10000.0);
     FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
   }
 
@@ -472,5 +472,76 @@ class AudioEngine {
   static set limiterThreshold(double db) {
     _limiterThreshold = db.clamp(-60.0, 0.0);
     FfiInterface.instance.limiterSetThreshold(_limiterThreshold);
+  }
+
+  // ─── WAV Export ──────────────────────────────────────────────────
+
+  /// Exports the current mix (all active tracks + effects) to a WAV file.
+  /// Runs in a C++ background thread (non-blocking).
+  /// [outputPath] is the destination file path.
+  /// [sampleRate] defaults to 44100. [bitDepth] defaults to 24.
+  /// Returns 0 on success, negative on error.
+  static Future<int> exportToWav(String outputPath,
+      {int sampleRate = 44100, int bitDepth = 24}) async {
+    // Pause all playing tracks
+    final playingTracks = <int>[];
+    for (final t in instance.tracks) {
+      if (t.state == PlaybackState.playing) {
+        playingTracks.add(t.index);
+        t.pause();
+      }
+    }
+
+    final ffi = FfiInterface.instance;
+    final pathPtr = outputPath.toNativeUtf8();
+    try {
+      // Start async export in C++ pthread
+      final startRc = ffi.exportMixStart(pathPtr, sampleRate, bitDepth);
+      if (startRc != 0) return startRc;
+
+      // Poll until done
+      while (ffi.exportGetStatus() == 1) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+
+      final result = ffi.exportGetResult();
+      ffi.exportCleanup();
+      return result;
+    } finally {
+      calloc.free(pathPtr);
+      // Resume tracks that were playing
+      for (final idx in playingTracks) {
+        instance.tracks[idx].resume();
+      }
+    }
+  }
+
+  /// Converts a single audio file to WAV format (no effects applied).
+  /// Runs in a C++ background thread (non-blocking).
+  /// [inputPath] is the source file (FLAC, WAV, MP3, AAC, M4A, OGG, OPUS).
+  /// [outputPath] is the destination WAV file path.
+  /// Returns 0 on success, negative on error.
+  static Future<int> convertFileToWav(String inputPath, String outputPath,
+      {int sampleRate = 44100, int bitDepth = 24}) async {
+    final ffi = FfiInterface.instance;
+    final inPtr = inputPath.toNativeUtf8();
+    final outPtr = outputPath.toNativeUtf8();
+    try {
+      // Start async conversion in C++ pthread
+      final startRc = ffi.convertFileStart(inPtr, outPtr, sampleRate, bitDepth);
+      if (startRc != 0) return startRc;
+
+      // Poll until done
+      while (ffi.exportGetStatus() == 1) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+
+      final result = ffi.exportGetResult();
+      ffi.exportCleanup();
+      return result;
+    } finally {
+      calloc.free(inPtr);
+      calloc.free(outPtr);
+    }
   }
 }
