@@ -213,6 +213,20 @@ void predecodeFlac(TrackState &trk, const char *path) {
     delete ctx;
 }
 
+// ─── EQ pending apply (called by decoder thread after creating gCtl.dsp) ───
+
+void applyPendingEq() {
+    if (!gCtl.dsp || !gCtl.eqPending.load(std::memory_order_acquire)) return;
+    for (int i = 0; i < 10; i++) {
+        gCtl.dsp->setBand(i, static_cast<FilterType>(gCtl.eqTypes[i]),
+                          gCtl.eqFreqs[i], gCtl.eqGains[i], gCtl.eqQs[i]);
+        gCtl.dsp->setBandEnabled(i, gCtl.eqEnabled[i] != 0);
+    }
+    gCtl.dsp->setBypass(gCtl.eqBypass != 0);
+    gCtl.eqPending.store(0, std::memory_order_release);
+    LOGI("applyPendingEq: applied %d-band EQ (bypass=%d)", 10, gCtl.eqBypass);
+}
+
 extern "C" {
 
 // ─── Legacy single-track controls (operate on track 0) ─────────────────────
@@ -465,17 +479,35 @@ EXPORT int32_t track_analyze_waveform(int32_t index, int32_t numBars, float *out
 // ─── EQ control exports ─────────────────────────────────────────────────────
 
 EXPORT void eq_set_band(int32_t index, int32_t type, double freq, double gain, double q) {
-    if (!gCtl.dsp) return;
+    if (index < 0 || index >= 10) return;
+    // Always store in pending arrays (kept in sync for next decoder thread)
+    gCtl.eqTypes[index] = type;
+    gCtl.eqFreqs[index] = freq;
+    gCtl.eqGains[index] = gain;
+    gCtl.eqQs[index] = q;
+    if (!gCtl.dsp) {
+        gCtl.eqPending.store(1, std::memory_order_release);
+        return;
+    }
     gCtl.dsp->setBand(index, static_cast<FilterType>(type), freq, gain, q);
 }
 
 EXPORT void eq_set_band_enabled(int32_t index, int32_t enabled) {
-    if (!gCtl.dsp) return;
+    if (index < 0 || index >= 10) return;
+    gCtl.eqEnabled[index] = enabled;
+    if (!gCtl.dsp) {
+        gCtl.eqPending.store(1, std::memory_order_release);
+        return;
+    }
     gCtl.dsp->setBandEnabled(index, enabled != 0);
 }
 
 EXPORT void eq_set_bypass(int32_t bypass) {
-    if (!gCtl.dsp) return;
+    gCtl.eqBypass = bypass;
+    if (!gCtl.dsp) {
+        gCtl.eqPending.store(1, std::memory_order_release);
+        return;
+    }
     gCtl.dsp->setBypass(bypass != 0);
 }
 

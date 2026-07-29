@@ -53,6 +53,7 @@ void wavPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        applyPendingEq();
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
         ensureFxChain((float)sr, ch);
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
@@ -283,6 +284,7 @@ void flacPlaybackThread(int ti) {
         gCtl.outChannels = ps.info.channels;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(ps.info.sampleRate, ps.info.channels);
+        applyPendingEq();
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
         ensureFxChain((float)ps.info.sampleRate, ps.info.channels);
         gCtl.stream = createAAudioStreamCallback(
@@ -724,6 +726,7 @@ void mediaPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        applyPendingEq();
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {
@@ -1030,6 +1033,7 @@ void mediaStreamPlaybackThread(int ti) {
         gCtl.outChannels = ch;
         if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
         gCtl.dsp->init(sr, ch);
+        applyPendingEq();
         if (!gCtl.limiter) gCtl.limiter = new Limiter();
         gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
         if (!gCtl.stream) {

@@ -26,6 +26,7 @@ void resetCtl() {
     gCtl.outChannels = 0;
     gCtl.dsp = nullptr;
     gCtl.masterVolume = 1.0f;
+    gCtl.eqPending = 0;
     // crossfadeMs is a user preference — don't reset
 }
 

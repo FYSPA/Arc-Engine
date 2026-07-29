@@ -18,6 +18,7 @@ import 'package:ffi/ffi.dart';
 
 import 'ffi_bindings.dart' show FfiInterface, FlacMetadata;
 import 'flac_metadata.dart';
+import 'eq_state.dart';
 
 /// Playback state for a [TrackPlayer].
 ///
@@ -228,6 +229,8 @@ class TrackPlayer {
         _stateCtrl.add(_state);
         _ensurePortRegistered();
         _instances[index] = this;
+        // Re-apply EQ settings (gCtl.dsp was just created by decoder thread)
+        EqState.apply();
         _startGaplessPolling();
       }
       return result;

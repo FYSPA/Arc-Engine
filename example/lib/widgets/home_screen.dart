@@ -128,11 +128,40 @@ class _HomeScreenState extends State<HomeScreen> {
     _startPositionPoller();
     _initDir();
     _loadStreamUrl();
+    _loadSavedEq();
   }
 
   Future<void> _loadStreamUrl() async {
     final prefs = await SharedPreferences.getInstance();
     _lastStreamUrl = prefs.getString('stream_url') ?? '';
+  }
+
+  Future<void> _loadSavedEq() async {
+    final prefs = await SharedPreferences.getInstance();
+    final name = prefs.getString('eq_preset') ?? 'Flat';
+    EqPreset? preset;
+    for (final p in EqPreset.builtInPresets) {
+      if (p.name == name) {
+        preset = p;
+        break;
+      }
+    }
+    if (preset == null) {
+      final customJson = prefs.getString('custom_eq_presets') ?? '[]';
+      final customs = EqPreset.listFromJson(customJson);
+      for (final p in customs) {
+        if (p.name == name) {
+          preset = p;
+          break;
+        }
+      }
+    }
+    preset ??= EqPreset.flat;
+    for (int i = 0; i < 10; i++) {
+      AudioEngine.setEqBand(i, preset.types[i], EqPreset.bandFrequencies[i],
+          preset.gains[i], preset.qs[i]);
+      AudioEngine.setEqBandEnabled(i, preset.gains[i] != 0.0);
+    }
   }
 
   Future<void> _initDir() async {

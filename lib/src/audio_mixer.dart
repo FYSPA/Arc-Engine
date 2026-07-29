@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 import 'ffi_bindings.dart' show FfiInterface, FlacInfo, FlacMetadata;
 import 'flac_metadata.dart';
 import 'track_player.dart';
+import 'eq_state.dart';
 import 'pcm_stream.dart';
 import 'audio_focus.dart' show AudioFocus, AudioFocusEvent;
 
@@ -447,24 +448,37 @@ class AudioEngine {
     FfiInterface.instance.reverbSetPreDelay(_reverbPreDelay);
   }
 
-  // ─── EQ (global) ────────────────────────────────────────────────────
-  static const int eqPeaking = 0;
-  static const int eqLowShelf = 1;
-  static const int eqHighShelf = 2;
-  static const int eqLowPass = 3;
-  static const int eqHighPass = 4;
+  // ─── EQ (global) — delegates to EqState ──────────────────────────────
+  static const int eqPeaking = EqState.peaking;
+  static const int eqLowShelf = EqState.lowShelf;
+  static const int eqHighShelf = EqState.highShelf;
+  static const int eqLowPass = EqState.lowPass;
+  static const int eqHighPass = EqState.highPass;
 
   static void setEqBand(
-          int index, int type, double freq, double gain, double q) =>
-      FfiInterface.instance.eqSetBand(index, type, freq, gain, q);
+      int index, int type, double freq, double gain, double q) {
+    if (index < 0 || index >= 10) return;
+    EqState.types[index] = type;
+    EqState.gains[index] = gain;
+    EqState.qs[index] = q;
+    EqState.enabled[index] = gain != 0.0;
+    FfiInterface.instance.eqSetBand(index, type, freq, gain, q);
+    FfiInterface.instance
+        .eqSetBandEnabled(index, EqState.enabled[index] ? 1 : 0);
+  }
 
   static void setEqBandEnabled(int index, bool enabled) =>
       FfiInterface.instance.eqSetBandEnabled(index, enabled ? 1 : 0);
 
-  static void setEqBypass(bool bypass) =>
-      FfiInterface.instance.eqSetBypass(bypass ? 1 : 0);
+  static void setEqBypass(bool bypass) {
+    EqState.bypass = bypass;
+    FfiInterface.instance.eqSetBypass(bypass ? 1 : 0);
+  }
 
-  static void resetEq() => FfiInterface.instance.eqReset();
+  static void resetEq() {
+    EqState.reset();
+    FfiInterface.instance.eqReset();
+  }
 
   // ─── Limiter ─────────────────────────────────────────────────────────
   static bool _limiterEnabled = true;

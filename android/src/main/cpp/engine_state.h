@@ -150,6 +150,15 @@ struct EngineState {
 
     // Dart Native Port for position push callbacks
     int64_t dartPort{0};
+
+    // Pending EQ state: stored when gCtl.dsp is null, applied by decoder thread
+    std::atomic<int> eqPending{0};
+    int32_t eqTypes[10]{};
+    double eqFreqs[10]{};
+    double eqGains[10]{};
+    double eqQs[10]{};
+    int32_t eqEnabled[10]{};
+    int32_t eqBypass{0};
 };
 
 extern EngineState gCtl;
@@ -168,3 +177,4 @@ void stopTrack(int index);
 void stopAllTracks();
 int findFreeTrack();
 int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh);
+void applyPendingEq();
