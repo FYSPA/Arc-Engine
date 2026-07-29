@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ffi_bindings.dart' show FfiInterface, FlacInfo, FlacMetadata;
 import 'flac_metadata.dart';
@@ -37,7 +38,27 @@ class AudioEngine {
           List.generate(4, (i) => TrackPlayer(i)),
         ) {
     _initAudioFocus();
+    _loadCrossfadePrefs();
+  }
+
+  static const _keyCrossfadeMs = 'crossfade_ms';
+  static const _keyCrossfadeVolume = 'crossfade_volume';
+
+  Future<void> _loadCrossfadePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    _crossfadeMs =
+        (prefs.getDouble(_keyCrossfadeMs) ?? 3000.0).clamp(0.0, 10000.0);
+    _crossfadeVolume =
+        (prefs.getDouble(_keyCrossfadeVolume) ?? 1.0).clamp(0.0, 1.0);
     FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
+    FfiInterface.instance.engineSetCrossfadeVolume(_crossfadeVolume);
+  }
+
+  static void _saveCrossfadePrefs() {
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setDouble(_keyCrossfadeMs, _crossfadeMs);
+      prefs.setDouble(_keyCrossfadeVolume, _crossfadeVolume);
+    });
   }
 
   void _initAudioFocus() {
@@ -131,6 +152,7 @@ class AudioEngine {
   static set crossfadeMs(double v) {
     _crossfadeMs = v.clamp(0.0, 10000.0);
     FfiInterface.instance.engineSetCrossfadeMs(_crossfadeMs.round());
+    _saveCrossfadePrefs();
   }
 
   /// Volume multiplier during crossfade zone (0.0–1.0).
@@ -140,6 +162,7 @@ class AudioEngine {
   static set crossfadeVolume(double v) {
     _crossfadeVolume = v.clamp(0.0, 1.0);
     FfiInterface.instance.engineSetCrossfadeVolume(_crossfadeVolume);
+    _saveCrossfadePrefs();
   }
 
   Stream<List<double>> startPcmStream({
