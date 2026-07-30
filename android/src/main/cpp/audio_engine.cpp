@@ -91,10 +91,7 @@ aaudio_data_callback_result_t aaudioDataCallback(
         for (int i = 0; i < total; i++) out[i] *= mv;
     }
 
-    // Apply shared DSP (EQ)
-    if (gCtl.dsp && maxFrames > 0) {
-        gCtl.dsp->process(out, maxFrames, ch);
-    }
+    // EQ is now applied per-track in decoder threads (not post-mixdown here)
 
     // Apply effect chain (post-EQ, pre-limiter — compressor, etc.)
     if (gCtl.fxChain && maxFrames > 0) {
@@ -513,6 +510,60 @@ EXPORT void eq_set_bypass(int32_t bypass) {
 EXPORT void eq_reset() {
     if (!gCtl.dsp) return;
     gCtl.dsp->resetAllBands();
+}
+
+// ─── Per-track EQ exports ──────────────────────────────────────────────────
+
+EXPORT void eq_set_track_band(int32_t trackIndex, int32_t bandIndex,
+                               int32_t type, double freq, double gain, double q) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS || bandIndex < 0 || bandIndex >= 10) return;
+    gCtl.trackEqHasConfig[trackIndex] = 1;
+    gCtl.trackEqTypes[trackIndex][bandIndex] = type;
+    gCtl.trackEqFreqs[trackIndex][bandIndex] = freq;
+    gCtl.trackEqGains[trackIndex][bandIndex] = gain;
+    gCtl.trackEqQs[trackIndex][bandIndex] = q;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (!trk.dsp) {
+        gCtl.trackEqPending[trackIndex].store(1, std::memory_order_release);
+        return;
+    }
+    trk.dsp->setBand(bandIndex, static_cast<FilterType>(type), freq, gain, q);
+}
+
+EXPORT void eq_set_track_band_enabled(int32_t trackIndex, int32_t bandIndex, int32_t enabled) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS || bandIndex < 0 || bandIndex >= 10) return;
+    gCtl.trackEqEnabled[trackIndex][bandIndex] = enabled;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (!trk.dsp) {
+        gCtl.trackEqPending[trackIndex].store(1, std::memory_order_release);
+        return;
+    }
+    trk.dsp->setBandEnabled(bandIndex, enabled != 0);
+}
+
+EXPORT void eq_set_track_bypass(int32_t trackIndex, int32_t bypass) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS) return;
+    gCtl.trackEqBypass[trackIndex] = bypass;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (!trk.dsp) {
+        gCtl.trackEqPending[trackIndex].store(1, std::memory_order_release);
+        return;
+    }
+    trk.dsp->setBypass(bypass != 0);
+}
+
+EXPORT void eq_reset_track(int32_t trackIndex) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (trk.dsp) trk.dsp->resetAllBands();
+}
+
+EXPORT void eq_clear_track(int32_t trackIndex) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS) return;
+    gCtl.trackEqHasConfig[trackIndex] = 0;
+    gCtl.trackEqPending[trackIndex] = 0;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (trk.dsp) { delete trk.dsp; trk.dsp = nullptr; }
 }
 
 // ─── Limiter exports ────────────────────────────────────────────────────────

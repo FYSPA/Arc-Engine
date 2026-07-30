@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:arc_engine/arc_engine.dart';
+import 'package:arc_engine/src/eq_state.dart';
 
 const _sr = 44100.0;
 
@@ -98,6 +99,7 @@ const _filterTypes = [
 
 const _storageKeyPreset = 'eq_preset';
 const _storageKeyCustom = 'custom_eq_presets';
+const _storageKeyTrackPreset = 'eq_preset_track_';
 
 class EqDialog extends StatefulWidget {
   const EqDialog({super.key});
@@ -113,6 +115,9 @@ class _EqDialogState extends State<EqDialog> {
   bool _settingPreset = false;
   List<EqPreset> _customPresets = [];
 
+  // -1 = Global, 0-3 = per-track
+  int _targetTrack = -1;
+
   @override
   void initState() {
     super.initState();
@@ -122,9 +127,57 @@ class _EqDialogState extends State<EqDialog> {
           EqPreset.listFromJson(prefs.getString(_storageKeyCustom) ?? '[]');
       final name = prefs.getString(_storageKeyPreset) ?? 'Flat';
       if (mounted) {
+        _syncStateFromTarget();
         _applyPresetByName(name);
       }
     });
+  }
+
+  void _syncStateFromTarget() {
+    if (_targetTrack == -1) {
+      for (int i = 0; i < 10; i++) {
+        _gains[i] = EqState.gains[i];
+        _qs[i] = EqState.qs[i];
+        _types[i] = EqState.types[i];
+        _enabled[i] = EqState.enabled[i];
+      }
+      _bypass = EqState.bypass;
+    } else {
+      final ts = EqState.trackOverrides[_targetTrack];
+      if (ts != null) {
+        for (int i = 0; i < 10; i++) {
+          _gains[i] = ts.gains[i];
+          _qs[i] = ts.qs[i];
+          _types[i] = ts.types[i];
+          _enabled[i] = ts.enabled[i];
+        }
+        _bypass = ts.bypass;
+      } else {
+        for (int i = 0; i < 10; i++) {
+          _gains[i] = 0.0;
+          _qs[i] = 0.707;
+          _types[i] = EqState.peaking;
+          _enabled[i] = false;
+        }
+        _bypass = false;
+      }
+    }
+  }
+
+  void _onTargetChanged(int? v) {
+    if (v == null) return;
+    _targetTrack = v;
+    _syncStateFromTarget();
+    _loadPresetForTarget();
+    setState(() => _expandedIndex = -1);
+  }
+
+  Future<void> _loadPresetForTarget() async {
+    final prefs = await SharedPreferences.getInstance();
+    final name = _targetTrack == -1
+        ? (prefs.getString(_storageKeyPreset) ?? 'Flat')
+        : (prefs.getString('$_storageKeyTrackPreset$_targetTrack') ?? 'Flat');
+    if (mounted) _applyPresetByName(name);
   }
 
   EqPreset? _findPreset(String name) {
@@ -139,7 +192,12 @@ class _EqDialogState extends State<EqDialog> {
 
   Future<void> _saveState() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_storageKeyPreset, _currentPreset);
+    if (_targetTrack == -1) {
+      await prefs.setString(_storageKeyPreset, _currentPreset);
+    } else {
+      await prefs.setString(
+          '$_storageKeyTrackPreset$_targetTrack', _currentPreset);
+    }
     await prefs.setString(
         _storageKeyCustom, EqPreset.listToJson(_customPresets));
   }
@@ -253,21 +311,36 @@ class _EqDialogState extends State<EqDialog> {
 
   void _updateBand(int index) {
     _enabled[index] = _gains[index] != 0.0;
-    AudioEngine.setEqBand(
-        index, _types[index], _bands[index].freq, _gains[index], _qs[index]);
-    AudioEngine.setEqBandEnabled(index, _enabled[index]);
+    if (_targetTrack == -1) {
+      AudioEngine.setEqBand(
+          index, _types[index], _bands[index].freq, _gains[index], _qs[index]);
+      AudioEngine.setEqBandEnabled(index, _enabled[index]);
+    } else {
+      AudioEngine.setTrackEqBand(
+          _targetTrack, index, _types[index], _gains[index], _qs[index]);
+      AudioEngine.setTrackEqBandEnabled(_targetTrack, index, _enabled[index]);
+    }
   }
 
   void _reset() {
     _applyPreset(EqPreset.flat);
     setState(() => _bypass = false);
-    AudioEngine.resetEq();
-    AudioEngine.setEqBypass(false);
+    if (_targetTrack == -1) {
+      AudioEngine.resetEq();
+      AudioEngine.setEqBypass(false);
+    } else {
+      AudioEngine.resetTrackEq(_targetTrack);
+      AudioEngine.setTrackEqBypass(_targetTrack, false);
+    }
   }
 
   void _toggleBypass(bool v) {
     setState(() => _bypass = v);
-    AudioEngine.setEqBypass(v);
+    if (_targetTrack == -1) {
+      AudioEngine.setEqBypass(v);
+    } else {
+      AudioEngine.setTrackEqBypass(_targetTrack, v);
+    }
   }
 
   List<Offset> _computeCurve(Size size) {
@@ -408,6 +481,48 @@ class _EqDialogState extends State<EqDialog> {
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                   color: Colors.white.withValues(alpha: 0.9))),
+          const SizedBox(width: 8),
+          SizedBox(
+            height: 24,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  value: _targetTrack,
+                  isDense: true,
+                  dropdownColor: const Color(0xFF1A1A24),
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.white.withValues(alpha: 0.6),
+                  ),
+                  icon: Icon(Icons.arrow_drop_down,
+                      size: 14, color: Colors.white.withValues(alpha: 0.4)),
+                  items: const [
+                    DropdownMenuItem(
+                        value: -1,
+                        child: Text('Global', style: TextStyle(fontSize: 11))),
+                    DropdownMenuItem(
+                        value: 0,
+                        child: Text('Track 1', style: TextStyle(fontSize: 11))),
+                    DropdownMenuItem(
+                        value: 1,
+                        child: Text('Track 2', style: TextStyle(fontSize: 11))),
+                    DropdownMenuItem(
+                        value: 2,
+                        child: Text('Track 3', style: TextStyle(fontSize: 11))),
+                    DropdownMenuItem(
+                        value: 3,
+                        child: Text('Track 4', style: TextStyle(fontSize: 11))),
+                  ],
+                  onChanged: _onTargetChanged,
+                ),
+              ),
+            ),
+          ),
           const Spacer(),
           SizedBox(
             height: 24,
@@ -738,8 +853,7 @@ class _EqDialogState extends State<EqDialog> {
                                         onPressed: () => setState(() {
                                           _enabled[i] = !_enabled[i];
                                           _onUserModified();
-                                          AudioEngine.setEqBandEnabled(
-                                              i, _enabled[i]);
+                                          _updateBand(i);
                                         }),
                                       ),
                                     ),

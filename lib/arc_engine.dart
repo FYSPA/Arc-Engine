@@ -31,6 +31,7 @@ export 'src/flac_metadata.dart' show FlacMetadataData;
 export 'src/track_player.dart' show TrackPlayer, PlaybackState;
 export 'src/audio_mixer.dart' show AudioEngine;
 export 'src/audio_focus.dart' show AudioFocusEvent;
+export 'src/eq_state.dart' show EqTrackState;
 export 'src/eq_preset.dart' show EqPreset;
 export 'src/media_session.dart'
     show

@@ -652,6 +652,58 @@ class AudioEngine {
     FfiInterface.instance.eqReset();
   }
 
+  // ─── Per-track EQ ────────────────────────────────────────────────────
+
+  /// Sets a per-track EQ band. If [trackIndex] has no override yet, one is
+  /// created automatically. Pass `null` for [freq] to use the standard band
+  /// frequency from [EqState.bandFrequencies].
+  static void setTrackEqBand(
+      int trackIndex, int bandIndex, int type, double gain, double q,
+      {double? freq}) {
+    if (trackIndex < 0 || trackIndex >= 4 || bandIndex < 0 || bandIndex >= 10) {
+      return;
+    }
+    final f = freq ?? EqState.bandFrequencies[bandIndex];
+    EqState.setTrackBand(trackIndex, bandIndex, type, f, gain, q);
+  }
+
+  /// Toggles a per-track EQ band enabled state.
+  static void setTrackEqBandEnabled(
+      int trackIndex, int bandIndex, bool enabled) {
+    if (trackIndex < 0 || trackIndex >= 4 || bandIndex < 0 || bandIndex >= 10) {
+      return;
+    }
+    final state = EqState.getTrackState(trackIndex);
+    state.enabled[bandIndex] = enabled;
+    FfiInterface.instance
+        .eqSetTrackBandEnabled(trackIndex, bandIndex, enabled ? 1 : 0);
+  }
+
+  /// Sets per-track EQ bypass.
+  static void setTrackEqBypass(int trackIndex, bool bypass) {
+    if (trackIndex < 0 || trackIndex >= 4) return;
+    final state = EqState.getTrackState(trackIndex);
+    state.bypass = bypass;
+    FfiInterface.instance.eqSetTrackBypass(trackIndex, bypass ? 1 : 0);
+  }
+
+  /// Resets per-track EQ to flat (keeps override active).
+  static void resetTrackEq(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= 4) return;
+    EqState.resetTrack(trackIndex);
+  }
+
+  /// Clears per-track EQ override (reverts track to global).
+  static void clearTrackEq(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= 4) return;
+    EqState.clearTrack(trackIndex);
+  }
+
+  /// Gets per-track EQ state, or `null` if track uses global.
+  static EqTrackState? getTrackEqState(int trackIndex) {
+    return EqState.trackOverrides[trackIndex];
+  }
+
   // ─── Limiter ─────────────────────────────────────────────────────────
   static bool _limiterEnabled = true;
   static double _limiterThreshold = -0.5;

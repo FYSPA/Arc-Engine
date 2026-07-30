@@ -89,6 +89,9 @@ void stopTrack(int index) {
     trk.resampleOverlapCount = 0;
     memset(trk.resampleOverlap, 0, sizeof(trk.resampleOverlap));
 
+    // Per-track EQ is NOT deleted here — it persists across play/stop cycles.
+    // It's only deleted in cleanupEngine() or when explicitly cleared via FFI.
+
     LOGI("stopTrack[%d]: done", index);
 }
 
@@ -116,6 +119,8 @@ void cleanupEngine() {
     for (int i = 0; i < MAX_TRACKS; i++) {
         if (gCtl.tracks[i].ringBuf) { delete gCtl.tracks[i].ringBuf; gCtl.tracks[i].ringBuf = nullptr; }
         if (gCtl.tracks[i].pcmRingBuf) { delete gCtl.tracks[i].pcmRingBuf; gCtl.tracks[i].pcmRingBuf = nullptr; }
+        // Per-track EQ
+        if (gCtl.tracks[i].dsp) { delete gCtl.tracks[i].dsp; gCtl.tracks[i].dsp = nullptr; }
     }
 
     // Close shared AAudio stream
@@ -204,4 +209,32 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     trk.preBufReady = 0; trk.preBufFrames = 0;
 
     return preFrames;
+}
+
+void applyPendingTrackEq(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    if (!trk.dsp) return;
+    if (!gCtl.trackEqPending[trackIndex].load(std::memory_order_acquire)) return;
+
+    for (int i = 0; i < 10; i++) {
+        if (gCtl.trackEqEnabled[trackIndex][i]) {
+            trk.dsp->setBand(i, static_cast<FilterType>(gCtl.trackEqTypes[trackIndex][i]),
+                              gCtl.trackEqFreqs[trackIndex][i], gCtl.trackEqGains[trackIndex][i],
+                              gCtl.trackEqQs[trackIndex][i]);
+            trk.dsp->setBandEnabled(i, true);
+        } else {
+            trk.dsp->setBandEnabled(i, false);
+        }
+    }
+    trk.dsp->setBypass(gCtl.trackEqBypass[trackIndex] != 0);
+    gCtl.trackEqPending[trackIndex].store(0, std::memory_order_release);
+}
+
+DspProcessor* getTrackEq(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= MAX_TRACKS) return nullptr;
+    TrackState &trk = gCtl.tracks[trackIndex];
+    // Per-track EQ if configured, otherwise global
+    if (trk.dsp && gCtl.trackEqHasConfig[trackIndex]) return trk.dsp;
+    return gCtl.dsp;
 }

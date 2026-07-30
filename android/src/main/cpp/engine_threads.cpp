@@ -65,6 +65,12 @@ void wavPlaybackThread(int ti) {
         LOGI("WAV thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
     }
 
+    // Per-track EQ: create if pending or has config
+    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
+        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
+        applyPendingTrackEq(ti);
+    }
+
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
     int32_t blockSize = 4096;
@@ -210,6 +216,9 @@ void wavPlaybackThread(int ti) {
         }
 
         if (trk.ringBuf) {
+            // Apply EQ (per-track or global) before push
+            DspProcessor *eq = getTrackEq(ti);
+            if (eq) eq->process(floatBuf.data(), chunk, ch);
             updateFadeHistory(trk, floatBuf.data(), chunk, ch);
             applyFadeIn(trk, floatBuf.data(), chunk, ch);
             int32_t pushed = trk.ringBuf->push(floatBuf.data(), chunk, ch);
@@ -322,6 +331,12 @@ void flacPlaybackThread(int ti) {
             LOGI("FLAC thread[%d]: post-stream pre-resampled %d→%d frames (%dHz→%dHz)",
                  ti, trk.preBufOrigFrames, outFrames, srcSr, gCtl.sampleRate);
         }
+    }
+
+    // Per-track EQ: create if pending or has config
+    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
+        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(ps.info.sampleRate, ps.info.channels); }
+        applyPendingTrackEq(ti);
     }
 
     trk.running = 1;
@@ -742,6 +757,12 @@ void mediaPlaybackThread(int ti) {
         LOGI("Media thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
     }
 
+    // Per-track EQ: create if pending or has config
+    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
+        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
+        applyPendingTrackEq(ti);
+    }
+
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
 
@@ -932,6 +953,9 @@ void mediaPlaybackThread(int ti) {
                         fb[i] = vs / 32768.0f;
                     }
                     if (trk.ringBuf) {
+                        // Apply EQ (per-track or global) before push
+                        DspProcessor *eq = getTrackEq(ti);
+                        if (eq) eq->process(fb, frames, outCh);
                         updateFadeHistory(trk, fb, frames, outCh);
                         applyFadeIn(trk, fb, frames, outCh);
                         trk.ringBuf->push(fb, frames, outCh);
@@ -1050,6 +1074,12 @@ void mediaStreamPlaybackThread(int ti) {
         }
         gCtl.sampleRate = sr;
         LOGI("Media stream[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
+    }
+
+    // Per-track EQ: create if pending or has config
+    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
+        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
+        applyPendingTrackEq(ti);
     }
 
     trk.running = 1;
@@ -1238,6 +1268,9 @@ void mediaStreamPlaybackThread(int ti) {
                         fb[i] = vs / 32768.0f;
                     }
                     if (trk.ringBuf) {
+                        // Apply EQ (per-track or global) before push
+                        DspProcessor *eq = getTrackEq(ti);
+                        if (eq) eq->process(fb, frames, outCh);
                         updateFadeHistory(trk, fb, frames, outCh);
                         applyFadeIn(trk, fb, frames, outCh);
                         trk.ringBuf->push(fb, frames, outCh);

@@ -11,6 +11,7 @@
 #include "flac_handler.h"
 #include "aaudio_utils.h"
 #include "engine_state.h"
+#include "dsp_processor.h"
 #include "ring_buffer.h"
 #include "common.h"
 
@@ -97,6 +98,10 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
             floatBuf[i * channels + ch] = s;
         }
+
+    // Apply EQ (per-track or global) to raw decoded audio before crossfade/resample
+    DspProcessor *eq = getTrackEq(state->trackIndex);
+    if (eq) eq->process(floatBuf, frames, channels);
 
     if (trk.ringBuf) {
         // ─── CROSSFADE: mix old decoder frames with preBuf in real-time ───

@@ -40,6 +40,9 @@ struct TrackState {
     RingBuffer *ringBuf{nullptr};
     RingBuffer *pcmRingBuf{nullptr};
 
+    // Per-track EQ (nullptr = use global gCtl.dsp)
+    DspProcessor *dsp{nullptr};
+
     int stopFd{-1};
 
     std::atomic<int> running{0};
@@ -159,6 +162,16 @@ struct EngineState {
     double eqQs[10]{};
     int32_t eqEnabled[10]{};
     int32_t eqBypass{0};
+
+    // Per-track EQ pending state: stored when track DSP is null, applied by decoder thread
+    std::atomic<int> trackEqPending[MAX_TRACKS]{};
+    int32_t trackEqTypes[MAX_TRACKS][10]{};
+    double trackEqFreqs[MAX_TRACKS][10]{};
+    double trackEqGains[MAX_TRACKS][10]{};
+    double trackEqQs[MAX_TRACKS][10]{};
+    int32_t trackEqEnabled[MAX_TRACKS][10]{};
+    int32_t trackEqBypass[MAX_TRACKS]{};
+    int32_t trackEqHasConfig[MAX_TRACKS]{};  // 1 = this track has per-track EQ config
 };
 
 extern EngineState gCtl;
@@ -178,3 +191,5 @@ void stopAllTracks();
 int findFreeTrack();
 int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh);
 void applyPendingEq();
+void applyPendingTrackEq(int trackIndex);
+DspProcessor* getTrackEq(int trackIndex);

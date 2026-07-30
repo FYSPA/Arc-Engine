@@ -164,6 +164,14 @@ abstract class FfiInterface {
   void eqSetBypass(int bypass);
   void eqReset();
 
+  // Per-track EQ
+  void eqSetTrackBand(int trackIndex, int bandIndex, int type, double freq,
+      double gain, double q);
+  void eqSetTrackBandEnabled(int trackIndex, int bandIndex, int enabled);
+  void eqSetTrackBypass(int trackIndex, int bypass);
+  void eqResetTrack(int trackIndex);
+  void eqClearTrack(int trackIndex);
+
   void limiterSetEnabled(int enabled);
   void limiterSetThreshold(double db);
 
@@ -561,6 +569,42 @@ final class FfiBindings implements FfiInterface {
   void eqReset() => _eqReset();
   late final _eqReset =
       _lib.lookupFunction<Void Function(), void Function()>('eq_reset');
+
+  // ─── Per-track EQ ──────────────────────────────────────────────────
+  @override
+  void eqSetTrackBand(int trackIndex, int bandIndex, int type, double freq,
+          double gain, double q) =>
+      _eqSetTrackBand(trackIndex, bandIndex, type, freq, gain, q);
+  late final _eqSetTrackBand = _lib.lookupFunction<
+      Void Function(Int32, Int32, Int32, Double, Double, Double),
+      void Function(
+          int, int, int, double, double, double)>('eq_set_track_band');
+
+  @override
+  void eqSetTrackBandEnabled(int trackIndex, int bandIndex, int enabled) =>
+      _eqSetTrackBandEnabled(trackIndex, bandIndex, enabled);
+  late final _eqSetTrackBandEnabled = _lib.lookupFunction<
+      Void Function(Int32, Int32, Int32),
+      void Function(int, int, int)>('eq_set_track_band_enabled');
+
+  @override
+  void eqSetTrackBypass(int trackIndex, int bypass) =>
+      _eqSetTrackBypass(trackIndex, bypass);
+  late final _eqSetTrackBypass =
+      _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
+          'eq_set_track_bypass');
+
+  @override
+  void eqResetTrack(int trackIndex) => _eqResetTrack(trackIndex);
+  late final _eqResetTrack =
+      _lib.lookupFunction<Void Function(Int32), void Function(int)>(
+          'eq_reset_track');
+
+  @override
+  void eqClearTrack(int trackIndex) => _eqClearTrack(trackIndex);
+  late final _eqClearTrack =
+      _lib.lookupFunction<Void Function(Int32), void Function(int)>(
+          'eq_clear_track');
 
   // ─── Limiter ─────────────────────────────────────────────────────────
   @override
