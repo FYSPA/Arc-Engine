@@ -65,6 +65,12 @@ int32_t track_play(int32_t index, const char* path) {
 
     TrackState &trk = gCtl.tracks[index];
 
+    // Clean up deferred resources from previous playback (stopTrack
+    // doesn't delete ringBuf/pcmRingBuf to avoid use-after-free in
+    // the AAudio callback — we clean them up here before creating new ones)
+    if (trk.ringBuf) { delete trk.ringBuf; trk.ringBuf = nullptr; }
+    if (trk.pcmRingBuf) { delete trk.pcmRingBuf; trk.pcmRingBuf = nullptr; }
+
     const char *ext = strrchr(path, '.');
     if (!ext) { LOGE("track_play[%d]: no extension", index); return -1; }
 

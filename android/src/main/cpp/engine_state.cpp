@@ -49,19 +49,23 @@ void stopTrack(int index) {
         LOGI("stopTrack[%d]: worker joined", index);
     }
 
-    // Cleanup track resources
+    // Set running=0 BEFORE cleanup — the AAudio callback may still be
+    // mid-flight reading from ringBuf. Setting running=0 ensures no future
+    // callback invocation will enter this track.
+    trk.running = 0;
+
+    // Cleanup non-callback resources
     if (trk.wavData) { delete[] trk.wavData; trk.wavData = nullptr; }
     trk.wavDataSize = trk.wavFrameSize = 0;
-    if (trk.ringBuf) { delete trk.ringBuf; trk.ringBuf = nullptr; }
-    if (trk.pcmRingBuf) { delete trk.pcmRingBuf; trk.pcmRingBuf = nullptr; }
     if (trk.stopFd >= 0) { close(trk.stopFd); trk.stopFd = -1; }
 
+    // DON'T delete ringBuf/pcmRingBuf here — the AAudio callback may still
+    // be reading from them. Defer to track_play() or cleanupEngine().
     trk.format = AudioFormat::NONE;
     trk.sampleRate = trk.channels = trk.bitsPerSample = 0;
     trk.totalFrames = 0;
     trk.writtenFrames = 0;
     trk.path[0] = 0;
-    trk.running = 0;
     trk.paused = 0;
     trk.seekToFrame = -1;
     trk.volume = 1.0f;
@@ -107,6 +111,12 @@ void cleanupEngine() {
     // Don't cleanup if any track is still running
     for (int i = 0; i < MAX_TRACKS; i++)
         if (gCtl.tracks[i].running) return;
+
+    // Clean up deferred ring buffers from all tracks
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (gCtl.tracks[i].ringBuf) { delete gCtl.tracks[i].ringBuf; gCtl.tracks[i].ringBuf = nullptr; }
+        if (gCtl.tracks[i].pcmRingBuf) { delete gCtl.tracks[i].pcmRingBuf; gCtl.tracks[i].pcmRingBuf = nullptr; }
+    }
 
     // Close shared AAudio stream
     if (gCtl.stream) {
