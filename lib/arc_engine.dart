@@ -32,4 +32,14 @@ export 'src/track_player.dart' show TrackPlayer, PlaybackState;
 export 'src/audio_mixer.dart' show AudioEngine;
 export 'src/audio_focus.dart' show AudioFocusEvent;
 export 'src/eq_preset.dart' show EqPreset;
+export 'src/media_session.dart'
+    show
+        MediaSession,
+        MediaCommand,
+        MediaCommandPlay,
+        MediaCommandPause,
+        MediaCommandNext,
+        MediaCommandPrevious,
+        MediaCommandSeekTo,
+        MediaCommandStop;
 export 'src/widgets/static_waveform_widget.dart' show StaticWaveformWidget;

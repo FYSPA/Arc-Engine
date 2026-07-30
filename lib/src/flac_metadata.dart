@@ -68,6 +68,7 @@ String arrayToString(Array<Uint8> arr) {
 /// Strips numeric prefixes from a title.
 ///
 /// Examples: "01 - Song Name" → "Song Name", "01.Song Name" → "Song Name"
+/// Preserves titles starting with non-separator chars like "&burn", "(ecco)".
 String computeTitleClean(String title) {
-  return title.replaceFirst(RegExp(r'^[\d\W]+'), '').trim();
+  return title.replaceFirst(RegExp(r'^\d+[\s\-._]+'), '').trim();
 }

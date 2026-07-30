@@ -111,6 +111,21 @@ class TrackPlayer {
   /// Name of the currently playing track. Empty if none.
   String get currentName => _currentName;
 
+  /// Display name for the track (metadata title if available, else filename).
+  String get displayName {
+    if (_metadata != null && _metadata!.title.isNotEmpty) {
+      return _metadata!.titleClean.isNotEmpty
+          ? _metadata!.titleClean
+          : _metadata!.title;
+    }
+    return _currentName;
+  }
+
+  /// URL for the album artwork. Set externally by the app.
+  String? _artworkUrl;
+  String? get artworkUrl => _artworkUrl;
+  set artworkUrl(String? v) => _artworkUrl = v;
+
   /// Whether a crossfade is currently active on this track.
   bool get isCrossfading => _ffi.trackIsCrossfading(index) != 0;
 
@@ -452,6 +467,7 @@ class TrackPlayer {
         } else if (_nextName.isNotEmpty) {
           _currentName = _nextName;
           _nextName = '';
+          _metadata = null;
           _nameCtrl.add(_currentName);
           // Update duration from native (totalFrames is updated during gapless)
           final nativeDurMs = _ffi.trackGetDuration(index);

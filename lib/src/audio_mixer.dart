@@ -9,6 +9,7 @@ import 'track_player.dart';
 import 'eq_state.dart';
 import 'pcm_stream.dart';
 import 'audio_focus.dart' show AudioFocus, AudioFocusEvent;
+import 'media_session.dart';
 
 /// Central orchestrator for the native audio engine.
 ///
@@ -33,12 +34,20 @@ class AudioEngine {
   static double _savedMasterVolume = 1.0;
   static StreamSubscription<AudioFocusEvent>? _focusSub;
 
+  // ─── MediaSession callbacks ──────────────────────────────────────────
+  void Function()? onNext;
+  void Function()? onPrevious;
+
+  // ─── Position sync throttle ──────────────────────────────────────────
+  DateTime _lastPositionSync = DateTime.fromMillisecondsSinceEpoch(0);
+
   AudioEngine._()
       : tracks = List.unmodifiable(
           List.generate(4, (i) => TrackPlayer(i)),
         ) {
     _initAudioFocus();
     _loadCrossfadePrefs();
+    _initMediaSession();
   }
 
   static const _keyCrossfadeMs = 'crossfade_ms';
@@ -78,6 +87,146 @@ class AudioEngine {
     } else {
       AudioFocus.abandon();
     }
+  }
+
+  // ─── Media Session ───────────────────────────────────────────────────
+
+  void _initMediaSession() {
+    MediaSession.requestPermission();
+    MediaSession.ensureService();
+    MediaSession.onCommand.listen((cmd) {
+      switch (cmd) {
+        case MediaCommandPlay():
+          for (final t in tracks) {
+            if (t.state == PlaybackState.paused) {
+              t.resume();
+              break;
+            }
+          }
+          break;
+        case MediaCommandPause():
+          for (final t in tracks) {
+            if (t.state == PlaybackState.playing) {
+              t.pause();
+              break;
+            }
+          }
+          break;
+        case MediaCommandNext():
+          if (onNext != null) {
+            onNext!();
+          } else {
+            for (final t in tracks) {
+              if (t.state == PlaybackState.playing ||
+                  t.state == PlaybackState.paused) {
+                t.stop();
+                break;
+              }
+            }
+          }
+          break;
+        case MediaCommandPrevious():
+          if (onPrevious != null) {
+            onPrevious!();
+          } else {
+            for (final t in tracks) {
+              if (t.state == PlaybackState.playing ||
+                  t.state == PlaybackState.paused) {
+                t.seek(Duration.zero);
+                _updateMediaSession();
+                break;
+              }
+            }
+          }
+          break;
+        case MediaCommandSeekTo(:final positionMs):
+          for (final t in tracks) {
+            if (t.state == PlaybackState.playing ||
+                t.state == PlaybackState.paused) {
+              t.seek(Duration(milliseconds: positionMs));
+              _updateMediaSession();
+              break;
+            }
+          }
+          break;
+        case MediaCommandStop():
+          for (final t in tracks) {
+            if (t.state != PlaybackState.stopped) t.stop();
+          }
+          break;
+      }
+    });
+
+    for (final track in tracks) {
+      track.onStateChanged.listen((_) => _updateMediaSession());
+      track.onPositionChanged.listen((_) => _syncPlaybackPosition());
+      track.onNameChanged.listen((_) => _updateMediaSession());
+    }
+  }
+
+  void _updateMediaSession() {
+    final anyPlaying = tracks.any((t) => t.state == PlaybackState.playing);
+    final anyActive = tracks.any((t) => t.state != PlaybackState.stopped);
+
+    if (!anyActive) {
+      MediaSession.show(title: 'Arc Audio', artist: '', isPlaying: false);
+      return;
+    }
+
+    // Find the "active" track (first playing, or first paused)
+    TrackPlayer? active;
+    for (final t in tracks) {
+      if (t.state == PlaybackState.playing) {
+        active = t;
+        break;
+      }
+    }
+    active ??= tracks.firstWhere(
+      (t) => t.state == PlaybackState.paused,
+      orElse: () => tracks[0],
+    );
+
+    final title =
+        active.displayName.isNotEmpty ? active.displayName : 'Unknown';
+    final artist = active.currentName.isNotEmpty ? active.currentName : '';
+
+    MediaSession.setMetadata(
+      title: title,
+      artist: artist,
+      album: '',
+      durationMs: active.duration.inMilliseconds,
+    );
+    MediaSession.setPlaybackState(
+      isPlaying: anyPlaying,
+      positionMs: active.position.inMilliseconds,
+    );
+    if (active.artworkUrl != null && active.artworkUrl!.isNotEmpty) {
+      MediaSession.setArtwork(active.artworkUrl!);
+    }
+    MediaSession.show(title: title, artist: artist, isPlaying: anyPlaying);
+  }
+
+  void _syncPlaybackPosition() {
+    final anyPlaying = tracks.any((t) => t.state == PlaybackState.playing);
+    if (!anyPlaying) return;
+
+    final now = DateTime.now();
+    if (now.difference(_lastPositionSync).inMilliseconds < 1000) return;
+    _lastPositionSync = now;
+
+    TrackPlayer? active;
+    for (final t in tracks) {
+      if (t.state == PlaybackState.playing) {
+        active = t;
+        break;
+      }
+    }
+    if (active == null) return;
+
+    MediaSession.setPlaybackState(
+      isPlaying: true,
+      positionMs: active.position.inMilliseconds,
+    );
   }
 
   void _onAudioFocusEvent(AudioFocusEvent event) {

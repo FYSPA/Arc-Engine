@@ -27,6 +27,7 @@
 #include <cstring>
 #include <string>
 #include <cctype>
+#include <jni.h>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
 // Sums all active tracks into a single output buffer with volume/pan per track.
@@ -37,15 +38,13 @@ aaudio_data_callback_result_t aaudioDataCallback(
     float *out = (float*)audioData;
     int32_t ch = gCtl.outChannels;
 
-    // If stream was disconnected, output silence while reconnecting
-    if (gCtl.streamDisconnected.load(std::memory_order_relaxed)) {
-        memset(out, 0, (size_t)numFrames * ch * sizeof(float));
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-
-    // Zero output buffer
+    // Zero buffer — AAudio doesn't guarantee clean buffer on all devices
     memset(out, 0, (size_t)numFrames * ch * sizeof(float));
 
+    // If stream was disconnected, output silence while reconnecting
+    if (gCtl.streamDisconnected.load(std::memory_order_relaxed)) {
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
     int32_t maxFrames = 0;
 
     // Check if any track has solo enabled
@@ -716,6 +715,41 @@ EXPORT int32_t convert_file_to_wav(const char *inputPath, const char *outputPath
     writer.close();
     decoded.free();
     return 0;
+}
+
+// ─── JNI bridge for Kotlin notification controls (when Flutter engine is dead) ──
+
+JNIEXPORT void JNICALL
+Java_com_fyspa_audio_engine_NativeBridge_pauseAll(JNIEnv *env, jclass clazz) {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (gCtl.tracks[i].running && !gCtl.tracks[i].paused)
+            track_pause(i);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_fyspa_audio_engine_NativeBridge_resumeAll(JNIEnv *env, jclass clazz) {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (gCtl.tracks[i].running && gCtl.tracks[i].paused)
+            track_resume(i);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_fyspa_audio_engine_NativeBridge_stopAll(JNIEnv *env, jclass clazz) {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (gCtl.tracks[i].running)
+            track_stop(i);
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fyspa_audio_engine_NativeBridge_isAnyPlaying(JNIEnv *env, jclass clazz) {
+    for (int i = 0; i < MAX_TRACKS; i++) {
+        if (gCtl.tracks[i].running && !gCtl.tracks[i].paused)
+            return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 }
