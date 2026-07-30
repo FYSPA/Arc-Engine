@@ -52,6 +52,7 @@ class TrackPlayer {
   int _seekingUntilMs = 0;
   bool _wasPlaying = false;
   FlacMetadataData? _metadata;
+  String _nextPath = '';
 
   final StreamController<PlaybackState> _stateCtrl =
       StreamController<PlaybackState>.broadcast();
@@ -209,11 +210,13 @@ class TrackPlayer {
     if (path == null || path.isEmpty) {
       _ffi.trackClearNext(index);
       _nextName = '';
+      _nextPath = '';
     } else {
       final pathPtr = path.toNativeUtf8();
       try {
         _ffi.trackSetNext(index, pathPtr);
         _nextName = name ?? path.split('/').last;
+        _nextPath = path;
       } finally {
         calloc.free(pathPtr);
       }
@@ -467,7 +470,13 @@ class TrackPlayer {
         } else if (_nextName.isNotEmpty) {
           _currentName = _nextName;
           _nextName = '';
-          _metadata = null;
+          // Load metadata for the next track before clearing path
+          if (_nextPath.isNotEmpty) {
+            _loadMetadata(_nextPath);
+            _nextPath = '';
+          } else {
+            _metadata = null;
+          }
           _nameCtrl.add(_currentName);
           // Update duration from native (totalFrames is updated during gapless)
           final nativeDurMs = _ffi.trackGetDuration(index);

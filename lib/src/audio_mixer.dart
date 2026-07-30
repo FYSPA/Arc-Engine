@@ -188,7 +188,7 @@ class AudioEngine {
 
     final title =
         active.displayName.isNotEmpty ? active.displayName : 'Unknown';
-    final artist = active.currentName.isNotEmpty ? active.currentName : '';
+    final artist = active.artist.isNotEmpty ? active.artist : '';
 
     MediaSession.setMetadata(
       title: title,

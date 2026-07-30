@@ -692,6 +692,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     const PcmVisualizer(),
                     const SizedBox(height: 16),
                     StatusDisplay(status: _status),
+                    if (_tracks.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      _buildMetadataSection(context),
+                    ],
                   ],
                 ),
               ),
@@ -1924,6 +1928,128 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildMetadataSection(BuildContext context) {
+    final tracksWithMeta =
+        _tracks.where((t) => t.player.metadata != null).toList();
+    if (tracksWithMeta.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Track Metadata',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.5),
+            ),
+          ),
+        ),
+        ...tracksWithMeta.map((t) {
+          final m = t.player.metadata!;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: t.running
+                                ? const Color(0xFF4CAF50).withValues(alpha: 0.2)
+                                : Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Track ${t.index}',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: t.running
+                                  ? const Color(0xFF4CAF50)
+                                  : Colors.white.withValues(alpha: 0.4),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            t.player.displayName,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white.withValues(alpha: 0.8),
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    _metaRow('Title', m.title),
+                    _metaRow('Title Clean', m.titleClean),
+                    _metaRow('Artist', m.artist),
+                    _metaRow('Album', m.album),
+                    _metaRow('Sample Rate', '${m.sampleRate} Hz'),
+                    _metaRow('Bit Depth', '${m.bitDepth} bit'),
+                    _metaRow('Channels',
+                        m.channels == 2 ? '2 (Stereo)' : '${m.channels}'),
+                    _metaRow('Bitrate', '${m.bitrate} kbps'),
+                    _metaRow(
+                        'Duration', _formatTime(m.duration.inMilliseconds)),
+                    if (m.trackNumber != null)
+                      _metaRow('Track #', '${m.trackNumber}'),
+                    if (m.year != null) _metaRow('Year', '${m.year}'),
+                    if (m.isrc.isNotEmpty) _metaRow('ISRC', m.isrc),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _metaRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value.isEmpty ? '—' : value,
+              style: TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Colors.white.withValues(alpha: 0.7),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
