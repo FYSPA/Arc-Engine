@@ -27,4 +27,7 @@ EXPORT void eq_set_bypass(int32_t bypass);
 EXPORT void eq_reset();
 EXPORT void limiter_set_enabled(int32_t enabled);
 EXPORT void limiter_set_threshold(float db);
+EXPORT void limiter_set_attack(float ms);
+EXPORT void limiter_set_release(float ms);
+EXPORT void limiter_set_lookahead(float ms);
 }

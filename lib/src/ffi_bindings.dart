@@ -174,6 +174,9 @@ abstract class FfiInterface {
 
   void limiterSetEnabled(int enabled);
   void limiterSetThreshold(double db);
+  void limiterSetAttack(double ms);
+  void limiterSetRelease(double ms);
+  void limiterSetLookahead(double ms);
 
   // ─── Native position push ──────────────────────────────────────────
   void trackRegisterCallback(int portId);
@@ -618,6 +621,24 @@ final class FfiBindings implements FfiInterface {
   late final _limiterSetThreshold =
       _lib.lookupFunction<Void Function(Float), void Function(double)>(
           'limiter_set_threshold');
+
+  @override
+  void limiterSetAttack(double ms) => _limiterSetAttack(ms);
+  late final _limiterSetAttack =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'limiter_set_attack');
+
+  @override
+  void limiterSetRelease(double ms) => _limiterSetRelease(ms);
+  late final _limiterSetRelease =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'limiter_set_release');
+
+  @override
+  void limiterSetLookahead(double ms) => _limiterSetLookahead(ms);
+  late final _limiterSetLookahead =
+      _lib.lookupFunction<Void Function(Float), void Function(double)>(
+          'limiter_set_lookahead');
 
   // ─── Native position push ──────────────────────────────────────────
   @override

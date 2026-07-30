@@ -578,6 +578,21 @@ EXPORT void limiter_set_threshold(float db) {
     gCtl.limiter->setThresholdDb(db);
 }
 
+EXPORT void limiter_set_attack(float ms) {
+    if (!gCtl.limiter) return;
+    gCtl.limiter->setAttackMs(ms);
+}
+
+EXPORT void limiter_set_release(float ms) {
+    if (!gCtl.limiter) return;
+    gCtl.limiter->setReleaseMs(ms);
+}
+
+EXPORT void limiter_set_lookahead(float ms) {
+    if (!gCtl.limiter) return;
+    gCtl.limiter->setLookAheadMs(ms);
+}
+
 // ─── FX Chain exports ───────────────────────────────────────────────────────
 
 EXPORT int32_t fx_add(const char *name) {

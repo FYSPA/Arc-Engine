@@ -707,9 +707,15 @@ class AudioEngine {
   // ─── Limiter ─────────────────────────────────────────────────────────
   static bool _limiterEnabled = true;
   static double _limiterThreshold = -0.5;
+  static double _limiterAttack = 5.0;
+  static double _limiterRelease = 50.0;
+  static double _limiterLookahead = 2.9;
 
   static bool get limiterEnabled => _limiterEnabled;
   static double get limiterThreshold => _limiterThreshold;
+  static double get limiterAttack => _limiterAttack;
+  static double get limiterRelease => _limiterRelease;
+  static double get limiterLookahead => _limiterLookahead;
 
   static set limiterEnabled(bool v) {
     _limiterEnabled = v;
@@ -719,6 +725,21 @@ class AudioEngine {
   static set limiterThreshold(double db) {
     _limiterThreshold = db.clamp(-60.0, 0.0);
     FfiInterface.instance.limiterSetThreshold(_limiterThreshold);
+  }
+
+  static set limiterAttack(double ms) {
+    _limiterAttack = ms.clamp(0.1, 100.0);
+    FfiInterface.instance.limiterSetAttack(_limiterAttack);
+  }
+
+  static set limiterRelease(double ms) {
+    _limiterRelease = ms.clamp(10.0, 1000.0);
+    FfiInterface.instance.limiterSetRelease(_limiterRelease);
+  }
+
+  static set limiterLookahead(double ms) {
+    _limiterLookahead = ms.clamp(0.0, 20.0);
+    FfiInterface.instance.limiterSetLookahead(_limiterLookahead);
   }
 
   // ─── WAV Export ──────────────────────────────────────────────────
