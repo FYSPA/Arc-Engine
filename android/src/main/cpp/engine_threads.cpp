@@ -70,6 +70,9 @@ void wavPlaybackThread(int ti) {
     int32_t blockSize = 4096;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
+    // Pre-alloc decode buffer — reused every iteration (avoids heap alloc per 4096 frames)
+    std::vector<float> floatBuf(blockSize * ch);
+
     uint64_t _st = 0;
     read(trk.stopFd, &_st, sizeof(_st)); // Drain phantom data
 
@@ -121,6 +124,7 @@ void wavPlaybackThread(int ti) {
                 ch = trk.channels;
                 bps = trk.bitsPerSample;
                 total = trk.totalFrames;
+                floatBuf.resize(blockSize * ch);
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
                 trk.skipPacing = 0;
@@ -173,6 +177,7 @@ void wavPlaybackThread(int ti) {
                 ch = trk.channels;
                 bps = trk.bitsPerSample;
                 total = trk.totalFrames;
+                floatBuf.resize(blockSize * ch);
                 trk.fadeHistPos = 0;
                 trk.fadeHistCount = 0;
                 trk.skipPacing = 0;
@@ -190,7 +195,6 @@ void wavPlaybackThread(int ti) {
         int32_t chunk = rem < blockSize ? rem : blockSize;
         int32_t base = (int32_t)trk.writtenFrames;
 
-        std::vector<float> floatBuf(chunk * ch);
         for (int32_t i = 0; i < chunk; i++) {
             for (int32_t c = 0; c < ch; c++) {
                 int32_t off = (base + i) * fs;
@@ -745,6 +749,9 @@ void mediaPlaybackThread(int ti) {
     int32_t outCh = ch;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
 
+    // Pre-alloc decode buffer — reused every output buffer (avoids heap alloc per codec output)
+    std::vector<float> decodeBuf(4096 * ch);
+
     uint64_t _stopMedia = 0;
     while (read(trk.stopFd, &_stopMedia, sizeof(_stopMedia)) <= 0) {
         _stopMedia = 0;
@@ -918,7 +925,8 @@ void mediaPlaybackThread(int ti) {
                     outBuf += info.offset;
                     int32_t totalS = info.size / 2;
                     int32_t frames = totalS / outCh;
-                    float *fb = new float[totalS];
+                    if (totalS > (int32_t)decodeBuf.size()) decodeBuf.resize(totalS);
+                    float *fb = decodeBuf.data();
                     for (int32_t i = 0; i < totalS; i++) {
                         int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
                         fb[i] = vs / 32768.0f;
@@ -935,7 +943,6 @@ void mediaPlaybackThread(int ti) {
                         trk.lastFrame[0] = fb[(frames - 1) * outCh];
                         if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
                     }
-                    delete[] fb;
                     trk.writtenFrames += frames;
                     pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / gCtl.sampleRate, true, trk.lastCallbackMs, gCtl.dartPort);
                 }
@@ -1051,6 +1058,9 @@ void mediaStreamPlaybackThread(int ti) {
     bool inputDone = false, outputDone = false;
     int32_t outCh = ch;
     int32_t threshold = RingBuffer::pacingThreshold(ch);
+
+    // Pre-alloc decode buffer — reused every output buffer (avoids heap alloc per codec output)
+    std::vector<float> decodeBuf(4096 * ch);
 
     LOGI("Media stream[%d]: started sr=%d ch=%d path=%s", ti, sr, ch, trk.path);
 
@@ -1221,7 +1231,8 @@ void mediaStreamPlaybackThread(int ti) {
                     outBuf += info.offset;
                     int32_t totalS = info.size / 2;
                     int32_t frames = totalS / outCh;
-                    float *fb = new float[totalS];
+                    if (totalS > (int32_t)decodeBuf.size()) decodeBuf.resize(totalS);
+                    float *fb = decodeBuf.data();
                     for (int32_t i = 0; i < totalS; i++) {
                         int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
                         fb[i] = vs / 32768.0f;
@@ -1238,7 +1249,6 @@ void mediaStreamPlaybackThread(int ti) {
                         trk.lastFrame[0] = fb[(frames - 1) * outCh];
                         if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
                     }
-                    delete[] fb;
                 }
             }
             AMediaCodec_releaseOutputBuffer(codec, outIdx, false);

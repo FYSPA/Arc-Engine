@@ -18,6 +18,9 @@ struct PlayState {
     FlacInfo info;
     AAudioStream *stream;
     int trackIndex;
+    // Pre-alloc decode buffer — reused every FLAC block (avoids heap alloc per callback)
+    float *decodeBuf{nullptr};
+    int32_t decodeBufCapacity{0};
 };
 
 FLAC__StreamDecoderWriteStatus infoWriteCallback(

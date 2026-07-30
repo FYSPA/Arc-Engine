@@ -84,7 +84,13 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     const int32_t channels = state->info.channels;
     const float scale = 1.0f / (float)(1LL << (state->info.bitsPerSample - 1));
 
-    std::vector<float> floatBuf(frames * channels);
+    int32_t needed = frames * channels;
+    if (needed > state->decodeBufCapacity) {
+        delete[] state->decodeBuf;
+        state->decodeBuf = new float[needed];
+        state->decodeBufCapacity = needed;
+    }
+    float *floatBuf = state->decodeBuf;
     for (int32_t i = 0; i < frames; i++)
         for (int32_t ch = 0; ch < channels; ch++) {
             float s = buffer[ch][i] * scale;
@@ -97,7 +103,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
         if (trk.crossfading.load() && trk.preBuf && trk.crossfadeRemaining.load() > 0
             && trk.crossfadePreBufPos < trk.preBufFrames) {
             // Prepare old frames (resample if SR mismatch)
-            float *oldFrames = floatBuf.data();
+            float *oldFrames = floatBuf;
             int32_t oldCount = frames;
             std::vector<float> resampledOld;
             if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
@@ -110,7 +116,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 int32_t outFrames = totalOut - skipOutput;
                 if (outFrames > 0 && outFrames <= frames * 2) {
                     resampledOld.resize(outFrames * channels);
-                    resampleSincStream(resampledOld.data(), outFrames, floatBuf.data(), frames, channels, ratio,
+                    resampleSincStream(resampledOld.data(), outFrames, floatBuf, frames, channels, ratio,
                                        trk.resampleOverlap, trk.resampleOverlapCount);
                     for (int32_t i = 0; i < outFrames * channels; i++) {
                         if (resampledOld[i] > 1.0f) resampledOld[i] = 1.0f;
@@ -169,7 +175,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             int32_t outFrames = totalOut - skipOutput;
             if (outFrames > 0 && outFrames <= frames * 2) {
                 std::vector<float> resampled(outFrames * channels);
-                resampleSincStream(resampled.data(), outFrames, floatBuf.data(), frames, channels, ratio,
+                resampleSincStream(resampled.data(), outFrames, floatBuf, frames, channels, ratio,
                                    trk.resampleOverlap, trk.resampleOverlapCount);
                 for (int32_t i = 0; i < outFrames * channels; i++) {
                     if (resampled[i] > 1.0f) resampled[i] = 1.0f;
@@ -182,21 +188,21 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 if (channels > 1) trk.lastFrame[1] = resampled[(outFrames - 1) * channels + 1];
             }
         } else {
-            updateFadeHistory(trk, floatBuf.data(), frames, channels);
-            applyFadeIn(trk, floatBuf.data(), frames, channels);
+            updateFadeHistory(trk, floatBuf, frames, channels);
+            applyFadeIn(trk, floatBuf, frames, channels);
             // Apply crossfade volume multiplier
             float cv = gCtl.crossfadeVolume.load(std::memory_order_relaxed);
             if (cv < 1.0f) {
                 for (int32_t i = 0; i < frames * channels; i++)
                     floatBuf[i] *= cv;
             }
-            trk.ringBuf->push(floatBuf.data(), frames, channels);
+            trk.ringBuf->push(floatBuf, frames, channels);
             trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
         }
     }
     if (trk.pcmRingBuf) {
-        trk.pcmRingBuf->push(floatBuf.data(), frames, channels);
+        trk.pcmRingBuf->push(floatBuf, frames, channels);
     }
 
     trk.writtenFrames += frames;

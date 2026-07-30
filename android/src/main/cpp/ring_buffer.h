@@ -43,8 +43,13 @@ public:
             totalSamples = (size_t)frames * channels;
         }
 
-        for (size_t i = 0; i < totalSamples; i++) {
-            m_buffer[(wi + i) & kMask] = data[i];
+        size_t pos = wi & kMask;
+        size_t firstPart = kCapacity - pos;
+        if (totalSamples <= firstPart) {
+            memcpy(m_buffer + pos, data, totalSamples * sizeof(float));
+        } else {
+            memcpy(m_buffer + pos, data, firstPart * sizeof(float));
+            memcpy(m_buffer, data + firstPart, (totalSamples - firstPart) * sizeof(float));
         }
 
         m_writeIndex.store(wi + totalSamples, std::memory_order_release);
@@ -61,8 +66,13 @@ public:
         int32_t toRead = availFrames < frames ? availFrames : frames;
 
         size_t totalSamples = (size_t)toRead * channels;
-        for (size_t i = 0; i < totalSamples; i++) {
-            data[i] = m_buffer[(ri + i) & kMask];
+        size_t pos = ri & kMask;
+        size_t firstPart = kCapacity - pos;
+        if (totalSamples <= firstPart) {
+            memcpy(data, m_buffer + pos, totalSamples * sizeof(float));
+        } else {
+            memcpy(data, m_buffer + pos, firstPart * sizeof(float));
+            memcpy(data + firstPart, m_buffer, (totalSamples - firstPart) * sizeof(float));
         }
 
         m_readIndex.store(ri + totalSamples, std::memory_order_release);

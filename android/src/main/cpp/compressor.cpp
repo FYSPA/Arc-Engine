@@ -56,7 +56,7 @@ void Compressor::process(float *samples, int32_t numFrames, int32_t channels) {
             sumSq += s * s;
         }
         float rms = sqrtf(sumSq / (float)channels);
-        float levelDb = 20.0f * log10f(fmaxf(rms, 1e-10f));
+        float levelDb = 6.020599913f * log2f(fmaxf(rms, 1e-10f));
 
         // Gain computer with soft knee
         float grDb = 0.0f;
@@ -76,7 +76,7 @@ void Compressor::process(float *samples, int32_t numFrames, int32_t channels) {
         envelope_ += coeff * (grDb - envelope_);
 
         // Convert gain reduction + makeup to linear
-        float gainLin = powf(10.0f, (envelope_ + makeupDb_) / 20.0f);
+        float gainLin = exp2f((envelope_ + makeupDb_) * 0.166096405f);
 
         // Apply
         for (int32_t c = 0; c < channels; c++) {

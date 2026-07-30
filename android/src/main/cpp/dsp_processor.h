@@ -17,8 +17,8 @@
 #include "common.h"
 
 struct BiquadState {
-    double x1, x2, y1, y2;
-    void reset() { x1 = x2 = y1 = y2 = 0.0; }
+    float x1, x2, y1, y2;
+    void reset() { x1 = x2 = y1 = y2 = 0.0f; }
 };
 
 enum class FilterType : int32_t {
@@ -111,21 +111,21 @@ public:
         for (int b = 0; b < MAX_EQ_BANDS; b++) {
             if (!bands_[b].enabled) continue;
 
-            double b0 = b0_[b], b1 = b1_[b], b2 = b2_[b];
-            double a1 = a1_[b], a2 = a2_[b];
+            float b0 = (float)b0_[b], b1 = (float)b1_[b], b2 = (float)b2_[b];
+            float a1 = (float)a1_[b], a2 = (float)a2_[b];
 
             for (int32_t f = 0; f < numFrames; f++) {
                 for (int32_t c = 0; c < ch; c++) {
                     int32_t idx = f * channels + c;
                     BiquadState &st = states_[b][c];
-                    double x0 = (double)samples[idx];
-                    double y0 = b0 * x0 + b1 * st.x1 + b2 * st.x2
+                    float x0 = samples[idx];
+                    float y0 = b0 * x0 + b1 * st.x1 + b2 * st.x2
                                 - a1 * st.y1 - a2 * st.y2;
                     st.x2 = st.x1;
                     st.x1 = x0;
                     st.y2 = st.y1;
                     st.y1 = y0;
-                    samples[idx] = (float)y0;
+                    samples[idx] = y0;
                 }
             }
         }
