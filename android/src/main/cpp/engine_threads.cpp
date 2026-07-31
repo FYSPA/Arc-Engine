@@ -191,6 +191,92 @@ static void fadeOutAndDrain(TrackState &trk, int32_t ch) {
     }
 }
 
+static void initTrackEq(int ti, int32_t sampleRate, int32_t channels) {
+    TrackState &trk = gCtl.tracks[ti];
+    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
+        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sampleRate, channels); }
+        applyPendingTrackEq(ti);
+    }
+}
+
+static int32_t findAudioTrack(AMediaExtractor *ext, int32_t &sr, int32_t &ch, int64_t &durationUs) {
+    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(ext); i++) {
+        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(ext, i);
+        const char *m = NULL;
+        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+        if (m && strncmp(m, "audio/", 6) == 0) {
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+            AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durationUs);
+            AMediaFormat_delete(fmt);
+            return i;
+        }
+        AMediaFormat_delete(fmt);
+    }
+    return -1;
+}
+
+static int32_t processCodecOutput(
+    TrackState &trk, int ti, int32_t outCh,
+    AMediaCodec *codec, ssize_t outIdx, const AMediaCodecBufferInfo &info,
+    std::vector<float> &decodeBuf)
+{
+    if (info.size <= 0 || !gCtl.stream || trk.paused) return 0;
+    size_t outSize;
+    uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
+    if (!outBuf) return 0;
+    outBuf += info.offset;
+    int32_t totalS = info.size / 2;
+    int32_t frames = totalS / outCh;
+    if (totalS > (int32_t)decodeBuf.size()) decodeBuf.resize(totalS);
+    float *fb = decodeBuf.data();
+    for (int32_t i = 0; i < totalS; i++) {
+        int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
+        fb[i] = vs / 32768.0f;
+    }
+    if (trk.ringBuf) {
+        DspProcessor *eq = getTrackEq(ti);
+        if (eq) eq->process(fb, frames, outCh);
+        updateFadeHistory(trk, fb, frames, outCh);
+        applyFadeIn(trk, fb, frames, outCh);
+        trk.ringBuf->push(fb, frames, outCh);
+    }
+    if (trk.pcmRingBuf) trk.pcmRingBuf->push(fb, frames, outCh);
+    if (frames > 0) {
+        trk.lastFrame[0] = fb[(frames - 1) * outCh];
+        if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
+    }
+    return frames;
+}
+
+static AMediaCodec* createCodecFromExtractor(
+    AMediaExtractor *extractor, int32_t audioTrack, const char *mime, AMediaFormat *trackFmt) {
+    AMediaExtractor_selectTrack(extractor, audioTrack);
+    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
+    if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
+        AMediaCodec_start(codec) != AMEDIA_OK) {
+        if (codec) AMediaCodec_delete(codec);
+        AMediaFormat_delete(trackFmt);
+        return nullptr;
+    }
+    AMediaFormat_delete(trackFmt);
+    return codec;
+}
+
+static bool initFirstTrackStream(int32_t sr, int32_t ch) {
+    if (gCtl.stream || sr <= 0 || ch <= 0) return true;
+    gCtl.outChannels = ch;
+    if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
+    gCtl.dsp->init(sr, ch);
+    applyPendingEq();
+    if (!gCtl.limiter) gCtl.limiter = new Limiter();
+    ensureFxChain((float)sr, ch);
+    gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
+    if (!gCtl.stream) return false;
+    gCtl.sampleRate = sr;
+    return true;
+}
+
 // ─── WAV Playback Thread ─────────────────────────────────────────────────────
 
 void wavPlaybackThread(int ti) {
@@ -205,27 +291,15 @@ void wavPlaybackThread(int ti) {
          ti, sr, ch, bps, (long long)total);
 
     // First track sets the shared output config
-    if (!gCtl.stream && sr > 0 && ch > 0) {
-        gCtl.outChannels = ch;
-        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
-        gCtl.dsp->init(sr, ch);
-        applyPendingEq();
-        if (!gCtl.limiter) gCtl.limiter = new Limiter();
-        ensureFxChain((float)sr, ch);
-        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-        if (!gCtl.stream) {
-            LOGE("WAV thread[%d]: createAAudioStreamCallback failed", ti);
-            delete[] data; trk.wavData = nullptr; trk.running = 0; return;
-        }
-        gCtl.sampleRate = sr;
-        LOGI("WAV thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
+    bool wasNew = !gCtl.stream;
+    if (!initFirstTrackStream(sr, ch)) {
+        LOGE("WAV thread[%d]: createAAudioStreamCallback failed", ti);
+        delete[] data; trk.wavData = nullptr; trk.running = 0; return;
     }
+    if (wasNew) LOGI("WAV thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
 
-    // Per-track EQ: create if pending or has config
-    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
-        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
-        applyPendingTrackEq(ti);
-    }
+    // Per-track EQ
+    initTrackEq(ti, sr, ch);
 
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
@@ -391,51 +465,38 @@ void flacPlaybackThread(int ti) {
     trk.totalFrames = ps.info.totalSamples;
 
     // First track sets shared output config
-    if (!gCtl.stream && ps.info.sampleRate > 0 && ps.info.channels > 0) {
-        gCtl.outChannels = ps.info.channels;
-        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
-        gCtl.dsp->init(ps.info.sampleRate, ps.info.channels);
-        applyPendingEq();
-        if (!gCtl.limiter) gCtl.limiter = new Limiter();
-        ensureFxChain((float)ps.info.sampleRate, ps.info.channels);
-        gCtl.stream = createAAudioStreamCallback(
-            ps.info.sampleRate, ps.info.channels, aaudioDataCallback, nullptr);
-        if (!gCtl.stream) {
-            FLAC__stream_decoder_delete(decoder);
-            trk.running = 0; return;
-        }
-        gCtl.sampleRate = ps.info.sampleRate;
-        LOGI("FLAC thread[%d]: shared AAudio stream created", ti);
-        // Post-stream pre-decode: track_set_next was called before stream creation,
-        // predecode was skipped (outChannels=0). Now that stream exists, do it.
-        if (trk.hasNext && !trk.preBufReady && gCtl.outChannels >= 2) {
-            LOGI("FLAC thread[%d]: post-stream predecode for %s", ti, trk.nextPath);
-            predecodeFlac(trk, trk.nextPath);
-        }
-        // Post-stream pre-resample: predecodeFlac couldn't pre-resample because
-        // stream didn't exist yet. Do it now.
-        if (trk.preBufReady && trk.preBufSampleRate > 0
-            && trk.preBufSampleRate != gCtl.sampleRate && trk.preBufOrigFrames == 0) {
-            int32_t srcSr = trk.preBufSampleRate;
-            double ratio = (double)gCtl.sampleRate / srcSr;
-            int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
-            float *resampled = new float[outFrames * 2];
-            resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
-            trk.preBufOrigFrames = trk.preBufFrames;
-            delete[] trk.preBuf;
-            trk.preBuf = resampled;
-            trk.preBufFrames = outFrames;
-            trk.preBufSampleRate = gCtl.sampleRate;
-            LOGI("FLAC thread[%d]: post-stream pre-resampled %d→%d frames (%dHz→%dHz)",
-                 ti, trk.preBufOrigFrames, outFrames, srcSr, gCtl.sampleRate);
-        }
+    bool wasNew = !gCtl.stream;
+    if (!initFirstTrackStream(ps.info.sampleRate, ps.info.channels)) {
+        FLAC__stream_decoder_delete(decoder);
+        trk.running = 0; return;
+    }
+    if (wasNew) LOGI("FLAC thread[%d]: shared AAudio stream created", ti);
+    // Post-stream pre-decode: track_set_next was called before stream creation,
+    // predecode was skipped (outChannels=0). Now that stream exists, do it.
+    if (wasNew && trk.hasNext && !trk.preBufReady && gCtl.outChannels >= 2) {
+        LOGI("FLAC thread[%d]: post-stream predecode for %s", ti, trk.nextPath);
+        predecodeFlac(trk, trk.nextPath);
+    }
+    // Post-stream pre-resample: predecodeFlac couldn't pre-resample because
+    // stream didn't exist yet. Do it now.
+    if (wasNew && trk.preBufReady && trk.preBufSampleRate > 0
+        && trk.preBufSampleRate != gCtl.sampleRate && trk.preBufOrigFrames == 0) {
+        int32_t srcSr = trk.preBufSampleRate;
+        double ratio = (double)gCtl.sampleRate / srcSr;
+        int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
+        float *resampled = new float[outFrames * 2];
+        resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+        trk.preBufOrigFrames = trk.preBufFrames;
+        delete[] trk.preBuf;
+        trk.preBuf = resampled;
+        trk.preBufFrames = outFrames;
+        trk.preBufSampleRate = gCtl.sampleRate;
+        LOGI("FLAC thread[%d]: post-stream pre-resampled %d→%d frames (%dHz→%dHz)",
+             ti, trk.preBufOrigFrames, outFrames, srcSr, gCtl.sampleRate);
     }
 
-    // Per-track EQ: create if pending or has config
-    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
-        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(ps.info.sampleRate, ps.info.channels); }
-        applyPendingTrackEq(ti);
-    }
+    // Per-track EQ
+    initTrackEq(ti, ps.info.sampleRate, ps.info.channels);
 
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
@@ -604,36 +665,16 @@ void mediaPlaybackThread(int ti) {
         AMediaExtractor_delete(extractor); close(fd); trk.running = false; return;
     }
 
-    int32_t audioTrack = -1, sr = 0, ch = 0;
+    int32_t sr = 0, ch = 0;
     int64_t durationUs = 0;
-    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
-        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
-        const char *m = NULL;
-        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-        if (m && strncmp(m, "audio/", 6) == 0) {
-            audioTrack = i;
-            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
-            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
-            AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durationUs);
-            AMediaFormat_delete(fmt); break;
-        }
-        AMediaFormat_delete(fmt);
-    }
+    int32_t audioTrack = findAudioTrack(extractor, sr, ch, durationUs);
     if (audioTrack < 0) { AMediaExtractor_delete(extractor); close(fd); trk.running = false; return; }
 
     AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
     const char *mime = NULL;
     AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
-    AMediaExtractor_selectTrack(extractor, audioTrack);
-
-    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
-    if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
-        AMediaCodec_start(codec) != AMEDIA_OK) {
-        if (codec) AMediaCodec_delete(codec);
-        AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor); close(fd);
-        trk.running = false; return;
-    }
-    AMediaFormat_delete(trackFmt);
+    AMediaCodec *codec = createCodecFromExtractor(extractor, audioTrack, mime, trackFmt);
+    if (!codec) { AMediaExtractor_delete(extractor); close(fd); trk.running = false; return; }
 
     trk.sampleRate = sr;
     trk.channels = ch;
@@ -641,27 +682,16 @@ void mediaPlaybackThread(int ti) {
     trk.writtenFrames = 0;
 
     // First track sets shared output config
-    if (!gCtl.stream && sr > 0 && ch > 0) {
-        gCtl.outChannels = ch;
-        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
-        gCtl.dsp->init(sr, ch);
-        applyPendingEq();
-        if (!gCtl.limiter) gCtl.limiter = new Limiter();
-        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-        if (!gCtl.stream) {
-            AMediaCodec_stop(codec); AMediaCodec_delete(codec);
-            AMediaExtractor_delete(extractor); close(fd);
-            trk.running = 0; return;
-        }
-        gCtl.sampleRate = sr;
-        LOGI("Media thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
+    bool wasNew = !gCtl.stream;
+    if (!initFirstTrackStream(sr, ch)) {
+        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+        AMediaExtractor_delete(extractor); close(fd);
+        trk.running = 0; return;
     }
+    if (wasNew) LOGI("Media thread[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
 
-    // Per-track EQ: create if pending or has config
-    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
-        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
-        applyPendingTrackEq(ti);
-    }
+    // Per-track EQ
+    initTrackEq(ti, sr, ch);
 
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
@@ -743,33 +773,14 @@ void mediaPlaybackThread(int ti) {
                 if (AMediaExtractor_setDataSourceFd(extractor, fd, 0, fileLen) != AMEDIA_OK) {
                     AMediaExtractor_delete(extractor); close(fd); trk.hasNext = 0; break;
                 }
-                int32_t aT = -1; sr = 0; ch = 0; int64_t durUs = 0;
-                for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
-                    AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
-                    const char *m = NULL;
-                    AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-                    if (m && strncmp(m, "audio/", 6) == 0) {
-                        aT = i;
-                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
-                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
-                        AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durUs);
-                        AMediaFormat_delete(fmt); break;
-                    }
-                    AMediaFormat_delete(fmt);
-                }
+                int64_t durUs = 0;
+                int32_t aT = findAudioTrack(extractor, sr, ch, durUs);
                 if (aT < 0) { AMediaExtractor_delete(extractor); close(fd); trk.hasNext = 0; break; }
                 AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, aT);
                 const char *mime = NULL;
                 AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
-                AMediaExtractor_selectTrack(extractor, aT);
-                codec = AMediaCodec_createDecoderByType(mime);
-                if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
-                    AMediaCodec_start(codec) != AMEDIA_OK) {
-                    if (codec) AMediaCodec_delete(codec);
-                    AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor); close(fd);
-                    trk.hasNext = 0; break;
-                }
-                AMediaFormat_delete(trackFmt);
+                codec = createCodecFromExtractor(extractor, aT, mime, trackFmt);
+                if (!codec) { AMediaExtractor_delete(extractor); close(fd); trk.hasNext = 0; break; }
                 trk.sampleRate = sr; trk.channels = ch;
                 trk.totalFrames = (durUs > 0 && sr > 0) ? (durUs * sr / 1000000) : 0;
                 trk.writtenFrames = 0;
@@ -820,34 +831,9 @@ void mediaPlaybackThread(int ti) {
             bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
             if (eos) outputDone = true;
 
-            if (info.size > 0 && gCtl.stream && !trk.paused) {
-                size_t outSize;
-                uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
-                if (outBuf) {
-                    outBuf += info.offset;
-                    int32_t totalS = info.size / 2;
-                    int32_t frames = totalS / outCh;
-                    if (totalS > (int32_t)decodeBuf.size()) decodeBuf.resize(totalS);
-                    float *fb = decodeBuf.data();
-                    for (int32_t i = 0; i < totalS; i++) {
-                        int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
-                        fb[i] = vs / 32768.0f;
-                    }
-                    if (trk.ringBuf) {
-                        // Apply EQ (per-track or global) before push
-                        DspProcessor *eq = getTrackEq(ti);
-                        if (eq) eq->process(fb, frames, outCh);
-                        updateFadeHistory(trk, fb, frames, outCh);
-                        applyFadeIn(trk, fb, frames, outCh);
-                        trk.ringBuf->push(fb, frames, outCh);
-                    }
-                    if (trk.pcmRingBuf) {
-                        trk.pcmRingBuf->push(fb, frames, outCh);
-                    }
-                    if (frames > 0) {
-                        trk.lastFrame[0] = fb[(frames - 1) * outCh];
-                        if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
-                    }
+            {
+                int32_t frames = processCodecOutput(trk, ti, outCh, codec, outIdx, info, decodeBuf);
+                if (frames > 0) {
                     trk.writtenFrames += frames;
                     pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / gCtl.sampleRate, true, trk.lastCallbackMs, gCtl.dartPort);
                 }
@@ -890,34 +876,15 @@ void mediaStreamPlaybackThread(int ti) {
 
     int32_t audioTrack = -1, sr = 0, ch = 0;
     int64_t durationUs = 0;
-    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
-        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
-        const char *m = NULL;
-        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-        if (m && strncmp(m, "audio/", 6) == 0) {
-            audioTrack = i;
-            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
-            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
-            AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durationUs);
-            AMediaFormat_delete(fmt); break;
-        }
-        AMediaFormat_delete(fmt);
-    }
+    audioTrack = findAudioTrack(extractor, sr, ch, durationUs);
     if (audioTrack < 0) { AMediaExtractor_delete(extractor); trk.running = false; return; }
 
     AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, audioTrack);
     const char *mime = NULL;
     AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
-    AMediaExtractor_selectTrack(extractor, audioTrack);
 
-    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
-    if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
-        AMediaCodec_start(codec) != AMEDIA_OK) {
-        if (codec) AMediaCodec_delete(codec);
-        AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor);
-        trk.running = false; return;
-    }
-    AMediaFormat_delete(trackFmt);
+    AMediaCodec *codec = createCodecFromExtractor(extractor, audioTrack, mime, trackFmt);
+    if (!codec) { AMediaExtractor_delete(extractor); trk.running = false; return; }
 
     trk.sampleRate = sr;
     trk.channels = ch;
@@ -925,27 +892,16 @@ void mediaStreamPlaybackThread(int ti) {
     trk.writtenFrames = 0;
 
     // First track sets shared output config
-    if (!gCtl.stream && sr > 0 && ch > 0) {
-        gCtl.outChannels = ch;
-        if (!gCtl.dsp) gCtl.dsp = new DspProcessor();
-        gCtl.dsp->init(sr, ch);
-        applyPendingEq();
-        if (!gCtl.limiter) gCtl.limiter = new Limiter();
-        gCtl.stream = createAAudioStreamCallback(sr, ch, aaudioDataCallback, nullptr);
-        if (!gCtl.stream) {
-            AMediaCodec_stop(codec); AMediaCodec_delete(codec);
-            AMediaExtractor_delete(extractor);
-            trk.running = 0; return;
-        }
-        gCtl.sampleRate = sr;
-        LOGI("Media stream[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
+    bool wasNew = !gCtl.stream;
+    if (!initFirstTrackStream(sr, ch)) {
+        AMediaCodec_stop(codec); AMediaCodec_delete(codec);
+        AMediaExtractor_delete(extractor);
+        trk.running = 0; return;
     }
+    if (wasNew) LOGI("Media stream[%d]: shared AAudio stream created (sr=%d ch=%d)", ti, sr, ch);
 
-    // Per-track EQ: create if pending or has config
-    if (gCtl.trackEqHasConfig[ti] || gCtl.trackEqPending[ti].load()) {
-        if (!trk.dsp) { trk.dsp = new DspProcessor(); trk.dsp->init(sr, ch); }
-        applyPendingTrackEq(ti);
-    }
+    // Per-track EQ
+    initTrackEq(ti, sr, ch);
 
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
@@ -1019,32 +975,13 @@ void mediaStreamPlaybackThread(int ti) {
                     AMediaExtractor_delete(extractor); trk.hasNext = 0; break;
                 }
                 int32_t aT = -1; sr = 0; ch = 0; int64_t durUs = 0;
-                for (int32_t i = 0; i < AMediaExtractor_getTrackCount(extractor); i++) {
-                    AMediaFormat *fmt = AMediaExtractor_getTrackFormat(extractor, i);
-                    const char *m = NULL;
-                    AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-                    if (m && strncmp(m, "audio/", 6) == 0) {
-                        aT = i;
-                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
-                        AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
-                        AMediaFormat_getInt64(fmt, AMEDIAFORMAT_KEY_DURATION, &durUs);
-                        AMediaFormat_delete(fmt); break;
-                    }
-                    AMediaFormat_delete(fmt);
-                }
+                aT = findAudioTrack(extractor, sr, ch, durUs);
                 if (aT < 0) { AMediaExtractor_delete(extractor); trk.hasNext = 0; break; }
                 AMediaFormat *trackFmt = AMediaExtractor_getTrackFormat(extractor, aT);
                 const char *mime = NULL;
                 AMediaFormat_getString(trackFmt, AMEDIAFORMAT_KEY_MIME, &mime);
-                AMediaExtractor_selectTrack(extractor, aT);
-                codec = AMediaCodec_createDecoderByType(mime);
-                if (!codec || AMediaCodec_configure(codec, trackFmt, NULL, NULL, 0) != AMEDIA_OK ||
-                    AMediaCodec_start(codec) != AMEDIA_OK) {
-                    if (codec) AMediaCodec_delete(codec);
-                    AMediaFormat_delete(trackFmt); AMediaExtractor_delete(extractor);
-                    trk.hasNext = 0; break;
-                }
-                AMediaFormat_delete(trackFmt);
+                codec = createCodecFromExtractor(extractor, aT, mime, trackFmt);
+                if (!codec) { AMediaExtractor_delete(extractor); trk.hasNext = 0; break; }
                 trk.sampleRate = sr; trk.channels = ch;
                 trk.totalFrames = (durUs > 0 && sr > 0) ? (durUs * sr / 1000000) : 0;
                 trk.writtenFrames = 0;
@@ -1100,36 +1037,7 @@ void mediaStreamPlaybackThread(int ti) {
             bool eos = info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
             if (eos) outputDone = true;
 
-            if (info.size > 0 && gCtl.stream && !trk.paused) {
-                size_t outSize;
-                uint8_t *outBuf = AMediaCodec_getOutputBuffer(codec, outIdx, &outSize);
-                if (outBuf) {
-                    outBuf += info.offset;
-                    int32_t totalS = info.size / 2;
-                    int32_t frames = totalS / outCh;
-                    if (totalS > (int32_t)decodeBuf.size()) decodeBuf.resize(totalS);
-                    float *fb = decodeBuf.data();
-                    for (int32_t i = 0; i < totalS; i++) {
-                        int16_t vs = outBuf[i*2] | (outBuf[i*2+1]<<8);
-                        fb[i] = vs / 32768.0f;
-                    }
-                    if (trk.ringBuf) {
-                        // Apply EQ (per-track or global) before push
-                        DspProcessor *eq = getTrackEq(ti);
-                        if (eq) eq->process(fb, frames, outCh);
-                        updateFadeHistory(trk, fb, frames, outCh);
-                        applyFadeIn(trk, fb, frames, outCh);
-                        trk.ringBuf->push(fb, frames, outCh);
-                    }
-                    if (trk.pcmRingBuf) {
-                        trk.pcmRingBuf->push(fb, frames, outCh);
-                    }
-                    if (frames > 0) {
-                        trk.lastFrame[0] = fb[(frames - 1) * outCh];
-                        if (outCh > 1) trk.lastFrame[1] = fb[(frames - 1) * outCh + 1];
-                    }
-                }
-            }
+            processCodecOutput(trk, ti, outCh, codec, outIdx, info, decodeBuf);
             AMediaCodec_releaseOutputBuffer(codec, outIdx, false);
 
             if (trk.paused && inputDone && eos) {

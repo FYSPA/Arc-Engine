@@ -6,6 +6,7 @@
 // Importance: Used by both AudioEngine.getFlacMetadata() and TrackPlayer getters.
 // ---------------------------------------------------------------------------
 
+import 'dart:convert';
 import 'dart:ffi';
 
 /// Descriptive + technical metadata for a FLAC file.
@@ -62,7 +63,7 @@ String arrayToString(Array<Uint8> arr) {
   } on RangeError {
     // Reached end of smaller array (e.g. isrc[16])
   }
-  return codes.isEmpty ? '' : String.fromCharCodes(codes);
+  return codes.isEmpty ? '' : utf8.decode(codes);
 }
 
 /// Strips numeric prefixes from a title.
