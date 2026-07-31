@@ -43,7 +43,7 @@ class _TrackUiState {
   double pan = 0.0;
   bool mute = false;
   bool solo = false;
-  bool loop = false;
+  int repeatCount = 0;
   List<double> waveformSamples = [];
   List<double> waveformPeaks = [];
   bool waveformLoading = false;
@@ -1154,22 +1154,58 @@ class _HomeScreenState extends State<HomeScreen> {
                       padding: EdgeInsets.zero,
                       tooltip: 'Solo',
                     ),
-                    // Loop button
+                    // Loop button (cycles: off → infinite → 1 → off)
                     IconButton(
                       onPressed: () => setState(() {
-                        t.loop = !t.loop;
-                        t.player.loop = t.loop;
+                        switch (t.repeatCount) {
+                          case 0:
+                            t.repeatCount = -1;
+                            break;
+                          case -1:
+                            t.repeatCount = 1;
+                            break;
+                          default:
+                            t.repeatCount = 0;
+                            break;
+                        }
+                        t.player.repeatCount = t.repeatCount;
                       }),
-                      icon: const Text('L',
-                          style: TextStyle(
-                              fontSize: 11, fontWeight: FontWeight.w700)),
-                      color: t.loop
+                      icon: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const Text('L',
+                              style: TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w700)),
+                          if (t.repeatCount == 1)
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: Container(
+                                padding: EdgeInsets.all(1),
+                                decoration: BoxDecoration(
+                                    color: const Color(0xFF42A5F5),
+                                    shape: BoxShape.circle),
+                                constraints:
+                                    BoxConstraints(minWidth: 12, minHeight: 12),
+                                child: Text('1',
+                                    style: TextStyle(
+                                        fontSize: 7, color: Colors.white),
+                                    textAlign: TextAlign.center),
+                              ),
+                            ),
+                        ],
+                      ),
+                      color: t.repeatCount != 0
                           ? const Color(0xFF42A5F5)
                           : Colors.white.withValues(alpha: 0.35),
                       constraints:
                           const BoxConstraints(minWidth: 32, minHeight: 32),
                       padding: EdgeInsets.zero,
-                      tooltip: 'Loop',
+                      tooltip: t.repeatCount == -1
+                          ? 'Loop infinite'
+                          : t.repeatCount == 0
+                              ? 'Loop off'
+                              : 'Loop ${t.repeatCount}x',
                     ),
                     const Spacer(),
                     SizedBox(

@@ -72,7 +72,7 @@ void stopTrack(int index) {
     trk.pan = 0.0f;
     trk.mute = 0;
     trk.solo = 0;
-    trk.loop = 0;
+    trk.repeatCount = 0;
     trk.hasNext = 0;
     trk.nextPath[0] = '\0';
     trk.crossfading = 0;

@@ -322,9 +322,15 @@ void wavPlaybackThread(int ti) {
 
         // Loop: reset to beginning when track completes
         if (trk.writtenFrames.load() >= total) {
-            if (trk.loop) {
+            int rc = trk.repeatCount.load();
+            if (rc != 0) {
+                if (rc > 0) trk.repeatCount = rc - 1;
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+                if (trk.repeatCount.load() <= 0 && rc > 0) {
+                    if (trk.hasNext) goto wav_gapless; else break;
+                }
+                continue;
             } else if (trk.hasNext) {
                 LOGI("WAV thread[%d]: gapless: loading %s (wf=%lld total=%lld)",
                      ti, trk.nextPath, (long long)trk.writtenFrames.load(), (long long)total);
@@ -342,12 +348,54 @@ void wavPlaybackThread(int ti) {
             trk.writtenFrames = seek < total ? seek : total;
             if (trk.ringBuf) trk.ringBuf->reset();
             LOGI("WAV thread[%d]: seek to frame %lld (total=%lld)", ti, (long long)trk.writtenFrames.load(), (long long)total);
-            // If seek reached or passed the end, trigger gapless immediately
-            if (total - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
+            if (total - seek <= SEEKGAP_THRESHOLD && trk.hasNext && trk.repeatCount.load() == 0) {
                 LOGI("WAV thread[%d]: seek-to-end -> forcing gapless transition", ti);
                 goto wav_gapless;
             }
         }
+
+        // Normal decode path
+        { int32_t effThreshold = (trk.hasNext && trk.repeatCount.load() == 0) ? std::min(threshold, 4096) : threshold;
+          if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+              continue;
+          }
+        }
+
+        { int32_t rem = (int32_t)(total - trk.writtenFrames);
+          int32_t chunk = rem < blockSize ? rem : blockSize;
+          int32_t base = (int32_t)trk.writtenFrames;
+
+          for (int32_t i = 0; i < chunk; i++) {
+              for (int32_t c = 0; c < ch; c++) {
+                  int32_t off = (base + i) * fs;
+                  float s = 0;
+                  switch (bps) {
+                      case 8:  s = (data[off + c] - 128) / 128.0f; break;
+                      case 16: { int16_t v = data[off+c*2] | (data[off+c*2+1]<<8); s = v/32768.0f; break; }
+                      case 24: { int32_t v = data[off+c*3]|(data[off+c*3+1]<<8)|(data[off+c*3+2]<<16); if(v&0x800000)v|=~0xFFFFFF; s=v/8388608.0f; break; }
+                      case 32: { int32_t v = data[off+c*4]|(data[off+c*4+1]<<8)|(data[off+c*4+2]<<16)|(data[off+c*4+3]<<24); s=v/2147483648.0f; break; }
+                  }
+                  floatBuf[i * ch + c] = s;
+              }
+          }
+
+          if (trk.ringBuf) {
+              DspProcessor *eq = getTrackEq(ti);
+              if (eq) eq->process(floatBuf.data(), chunk, ch);
+              updateFadeHistory(trk, floatBuf.data(), chunk, ch);
+              applyFadeIn(trk, floatBuf.data(), chunk, ch);
+              int32_t pushed = trk.ringBuf->push(floatBuf.data(), chunk, ch);
+              trk.writtenFrames += pushed;
+              if (pushed > 0) {
+                  trk.lastFrame[0] = floatBuf[(pushed - 1) * ch];
+                  if (ch > 1) trk.lastFrame[1] = floatBuf[(pushed - 1) * ch + 1];
+                  pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / sr, true, trk.lastCallbackMs, gCtl.dartPort);
+              }
+          }
+        }
+
+        continue;
 
       wav_gapless:
         { int32_t tmpSR = 0, tmpCh = 0;
@@ -378,48 +426,6 @@ void wavPlaybackThread(int ti) {
         floatBuf.resize(blockSize * ch);
         LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
         continue;
-
-        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
-        if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-
-        int32_t rem = (int32_t)(total - trk.writtenFrames);
-        int32_t chunk = rem < blockSize ? rem : blockSize;
-        int32_t base = (int32_t)trk.writtenFrames;
-
-        for (int32_t i = 0; i < chunk; i++) {
-            for (int32_t c = 0; c < ch; c++) {
-                int32_t off = (base + i) * fs;
-                float s = 0;
-                switch (bps) {
-                    case 8:  s = (data[off + c] - 128) / 128.0f; break;
-                    case 16: { int16_t v = data[off+c*2] | (data[off+c*2+1]<<8); s = v/32768.0f; break; }
-                    case 24: { int32_t v = data[off+c*3]|(data[off+c*3+1]<<8)|(data[off+c*3+2]<<16); if(v&0x800000)v|=~0xFFFFFF; s=v/8388608.0f; break; }
-                    case 32: { int32_t v = data[off+c*4]|(data[off+c*4+1]<<8)|(data[off+c*4+2]<<16)|(data[off+c*4+3]<<24); s=v/2147483648.0f; break; }
-                }
-                floatBuf[i * ch + c] = s;
-            }
-        }
-
-        if (trk.ringBuf) {
-            // Apply EQ (per-track or global) before push
-            DspProcessor *eq = getTrackEq(ti);
-            if (eq) eq->process(floatBuf.data(), chunk, ch);
-            updateFadeHistory(trk, floatBuf.data(), chunk, ch);
-            applyFadeIn(trk, floatBuf.data(), chunk, ch);
-            int32_t pushed = trk.ringBuf->push(floatBuf.data(), chunk, ch);
-            trk.writtenFrames += pushed;
-            if (pushed > 0) {
-                trk.lastFrame[0] = floatBuf[(pushed - 1) * ch];
-                if (ch > 1) trk.lastFrame[1] = floatBuf[(pushed - 1) * ch + 1];
-                pushPositionToDart(ti, trk.writtenFrames.load() * 1000 / sr, true, trk.lastCallbackMs, gCtl.dartPort);
-            }
-        }
-        if (trk.pcmRingBuf) {
-            trk.pcmRingBuf->push(floatBuf.data(), chunk, ch);
-        }
     }
 
     LOGI("WAV thread[%d]: loop exit wf=%lld total=%lld", ti,
@@ -512,7 +518,7 @@ void flacPlaybackThread(int ti) {
         // EARLY CROSSFADE: activate real-time mixing — old decoder continues, write callback
         // mixes old frames with preBuf (old fading out, new fading in) and pushes to ring buffer.
         // Old decoder reaches EOS → goto flac_gapless for decoder swap.
-        if (!trk.loop && trk.hasNext && !trk.crossfading.load()
+        if (trk.repeatCount.load() == 0 && trk.hasNext && !trk.crossfading.load()
             && ps.info.totalSamples > 0) {
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
             int64_t remaining = ps.info.totalSamples - trk.writtenFrames;
@@ -532,11 +538,17 @@ void flacPlaybackThread(int ti) {
         if (ps.info.totalSamples > 0 && trk.writtenFrames >= ps.info.totalSamples) {
             LOGI("FLAC thread[%d]: natural-end detected wf=%lld total=%lld loop=%d hasNext=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                 trk.loop.load(), trk.hasNext.load());
-            if (trk.loop) {
+                 trk.repeatCount.load(), trk.hasNext.load());
+            if (trk.repeatCount.load() != 0) {
+                int rc = trk.repeatCount.load();
+                if (rc > 0) trk.repeatCount = rc - 1;
                 FLAC__stream_decoder_seek_absolute(decoder, 0);
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+                if (trk.repeatCount.load() <= 0 && rc > 0) {
+                    if (trk.hasNext) goto flac_gapless; else break;
+                }
+                continue;
             } else if (trk.hasNext) {
               flac_gapless:
                 if (trk.crossfading.load()) {
@@ -596,14 +608,14 @@ void flacPlaybackThread(int ti) {
         if (seek >= 0) {
             LOGI("FLAC thread[%d]: SEEK seek=%lld totalFrames=%lld totalSamples=%lld remaining=%lld hasNext=%d loop=%d",
                  ti, (long long)seek, (long long)trk.totalFrames, (long long)ps.info.totalSamples,
-                 (long long)(trk.totalFrames - seek), trk.hasNext.load(), trk.loop.load());
+                 (long long)(trk.totalFrames - seek), trk.hasNext.load(), trk.repeatCount.load());
             if (seek < ps.info.totalSamples || ps.info.totalSamples == 0) {
                 FLAC__stream_decoder_seek_absolute(decoder, seek);
                 trk.writtenFrames = seek;
                 if (trk.ringBuf) trk.ringBuf->reset();
             }
             // If seek reaches/passes end and next track is queued, trigger gapless immediately
-            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && trk.repeatCount.load() == 0) {
                 LOGI("FLAC thread[%d]: seek-to-end -> forcing gapless transition", ti);
                 if (!flacGaplessPrep(trk, ch, ti)) break;
                 int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
@@ -622,7 +634,7 @@ void flacPlaybackThread(int ti) {
             continue;
         }
 
-        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        int32_t effThreshold = (trk.hasNext && trk.repeatCount.load() == 0) ? std::min(threshold, 4096) : threshold;
         if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
@@ -632,8 +644,19 @@ void flacPlaybackThread(int ti) {
         if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) {
             LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                 trk.hasNext.load(), trk.loop.load());
-            if (trk.hasNext && !trk.loop) {
+                 trk.hasNext.load(), trk.repeatCount.load());
+            if (trk.repeatCount.load() != 0) {
+                int rc = trk.repeatCount.load();
+                if (rc > 0) trk.repeatCount = rc - 1;
+                FLAC__stream_decoder_seek_absolute(decoder, 0);
+                trk.writtenFrames = 0;
+                if (trk.ringBuf) trk.ringBuf->reset();
+                if (trk.repeatCount.load() <= 0 && rc > 0) {
+                    if (trk.hasNext) goto flac_gapless; else break;
+                }
+                continue;
+            }
+            if (trk.hasNext && trk.repeatCount.load() == 0) {
                 LOGI("FLAC thread[%d]: EOS -> goto flac_gapless", ti);
                 goto flac_gapless;
             }
@@ -706,6 +729,7 @@ void mediaPlaybackThread(int ti) {
     uint64_t _stopMedia = 0;
     while (read(trk.stopFd, &_stopMedia, sizeof(_stopMedia)) <= 0) {
         _stopMedia = 0;
+        int rc = trk.repeatCount.load();
         int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0 && sr > 0) {
             int64_t seekUs = seek * 1000000 / sr;
@@ -716,7 +740,7 @@ void mediaPlaybackThread(int ti) {
             trk.writtenFrames = seek;
             if (trk.ringBuf) trk.ringBuf->reset();
             // If seek reaches/passes end and next track is queued, force gapless
-            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop && trk.totalFrames > 0) {
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && trk.repeatCount.load() == 0 && trk.totalFrames > 0) {
                 LOGI("Media thread[%d]: seek-to-end -> forcing gapless transition", ti);
                 goto media_force_gapless;
             }
@@ -724,13 +748,18 @@ void mediaPlaybackThread(int ti) {
 
         // Loop: seek back to beginning when track completes
         if (outputDone && !trk.paused) {
-            if (trk.loop) {
+            if (rc != 0) {
+                if (rc > 0) trk.repeatCount = rc - 1;
                 AMediaExtractor_seekTo(extractor, 0, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
                 AMediaCodec_flush(codec);
                 inputDone = false;
                 outputDone = false;
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+                if (trk.repeatCount.load() <= 0 && rc > 0) {
+                    if (trk.hasNext) goto media_force_gapless; else break;
+                }
+                continue;
             } else if (trk.hasNext) {
               media_force_gapless:
                 // Pre-check: validate new file format before destroying old resources
@@ -792,7 +821,7 @@ void mediaPlaybackThread(int ti) {
             } else break;
         }
 
-        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        int32_t effThreshold = (trk.hasNext && trk.repeatCount.load() == 0) ? std::min(threshold, 4096) : threshold;
         if (trk.ringBuf && trk.ringBuf->available(outCh) > effThreshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
@@ -918,6 +947,7 @@ void mediaStreamPlaybackThread(int ti) {
     uint64_t _stopVal = 0;
     while (read(trk.stopFd, &_stopVal, sizeof(_stopVal)) <= 0) {
         _stopVal = 0;
+        int rc = trk.repeatCount.load();
         int64_t seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0 && sr > 0 && trk.totalFrames > 0) {
             int64_t seekUs = seek * 1000000 / sr;
@@ -928,7 +958,7 @@ void mediaStreamPlaybackThread(int ti) {
             trk.writtenFrames = seek;
             if (trk.ringBuf) trk.ringBuf->reset();
             // If seek reaches/passes end and next track is queued, force gapless
-            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop && trk.totalFrames > 0) {
+            if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && trk.repeatCount.load() == 0 && trk.totalFrames > 0) {
                 LOGI("Media stream[%d]: seek-to-end -> forcing gapless transition", ti);
                 goto stream_force_gapless;
             }
@@ -936,13 +966,18 @@ void mediaStreamPlaybackThread(int ti) {
 
         // Loop: seek back to beginning when track completes
         if (outputDone && !trk.paused) {
-            if (trk.loop) {
+            if (rc != 0) {
+                if (rc > 0) trk.repeatCount = rc - 1;
                 AMediaExtractor_seekTo(extractor, 0, AMEDIAEXTRACTOR_SEEK_CLOSEST_SYNC);
                 AMediaCodec_flush(codec);
                 inputDone = false;
                 outputDone = false;
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
+                if (trk.repeatCount.load() <= 0 && rc > 0) {
+                    if (trk.hasNext) goto stream_force_gapless; else break;
+                }
+                continue;
             } else if (trk.hasNext) {
               stream_force_gapless:
                 // Pre-check: validate new file format before destroying old resources
@@ -993,7 +1028,7 @@ void mediaStreamPlaybackThread(int ti) {
             } else break;
         }
 
-        int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
+        int32_t effThreshold = (trk.hasNext && trk.repeatCount.load() == 0) ? std::min(threshold, 4096) : threshold;
         if (trk.ringBuf && trk.ringBuf->available(outCh) > effThreshold && !trk.paused && !trk.skipPacing) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;

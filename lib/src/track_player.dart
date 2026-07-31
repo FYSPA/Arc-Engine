@@ -45,7 +45,7 @@ class TrackPlayer {
   double _pan = 0.0;
   bool _mute = false;
   bool _solo = false;
-  bool _loop = false;
+  int _repeatCount = 0; // 0=off, -1=infinite, N>0=repeat N times
   String _currentName = '';
   String _nextName = '';
   int _lastGapLessVersion = 0;
@@ -103,8 +103,16 @@ class TrackPlayer {
   /// Whether this track is soloed (only soloed tracks play).
   bool get solo => _solo;
 
-  /// Whether this track loops (repeats from beginning when finished).
-  bool get loop => _loop;
+  /// Loop repeat count: 0=off, -1=infinite, N>0=repeat N times.
+  int get repeatCount => _repeatCount;
+  set repeatCount(int v) {
+    _repeatCount = v;
+    _ffi.trackSetLoop(index, v);
+  }
+
+  /// Whether this track loops (any non-zero repeatCount).
+  bool get loop => _repeatCount != 0;
+  set loop(bool v) => repeatCount = v ? -1 : 0;
 
   /// Name of the next track queued for gapless transition. Empty if none.
   String get nextName => _nextName;
@@ -196,12 +204,6 @@ class TrackPlayer {
     _ffi.trackSetSolo(index, v ? 1 : 0);
   }
 
-  /// Enables or disables loop for this track.
-  set loop(bool v) {
-    _loop = v;
-    _ffi.trackSetLoop(index, v ? 1 : 0);
-  }
-
   /// Sets the next track to play automatically when this track finishes.
   ///
   /// The transition is gap-less — no silence between tracks. Set to
@@ -249,6 +251,8 @@ class TrackPlayer {
         _instances[index] = this;
         // Re-apply EQ settings (gCtl.dsp was just created by decoder thread)
         EqState.apply();
+        // Re-apply loop flag (cleared by stop() above)
+        if (_repeatCount != 0) _ffi.trackSetLoop(index, _repeatCount);
         _startGaplessPolling();
       }
       return result;

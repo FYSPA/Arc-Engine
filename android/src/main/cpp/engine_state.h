@@ -49,7 +49,7 @@ struct TrackState {
     std::atomic<int> paused{0};
     std::atomic<int> mute{0};
     std::atomic<int> solo{0};
-    std::atomic<int> loop{0};
+    std::atomic<int> repeatCount{0};  // 0=off, -1=infinite, N>0=repeat N times
     std::atomic<int64_t> seekToFrame{-1};
 
     std::atomic<float> volume{1.0f};

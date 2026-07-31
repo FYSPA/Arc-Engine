@@ -390,7 +390,7 @@ EXPORT void track_set_solo(int32_t index, int32_t solo) {
 
 EXPORT void track_set_loop(int32_t index, int32_t loop) {
     if (index >= 0 && index < MAX_TRACKS)
-        gCtl.tracks[index].loop = loop != 0;
+        gCtl.tracks[index].repeatCount = loop;
 }
 
 EXPORT void track_set_next(int32_t index, const char *path) {
