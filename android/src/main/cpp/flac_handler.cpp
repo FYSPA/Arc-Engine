@@ -23,6 +23,14 @@
 
 // ─── FLAC callbacks ──────────────────────────────────────────────────────────
 
+static inline void ensureCapacity(float *&buf, int32_t &cap, int32_t needed) {
+    if (needed > cap) {
+        delete[] buf;
+        buf = new float[needed];
+        cap = needed;
+    }
+}
+
 FLAC__StreamDecoderWriteStatus infoWriteCallback(
     const FLAC__StreamDecoder*, const FLAC__Frame*, const FLAC__int32* const[], void*) {
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
@@ -110,7 +118,6 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             // Prepare old frames (resample if SR mismatch)
             float *oldFrames = floatBuf;
             int32_t oldCount = frames;
-            std::vector<float> resampledOld;
             if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
                 && trk.streamSampleRate != trk.sampleRate) {
                 double ratio = (double)trk.streamSampleRate / trk.sampleRate;
@@ -120,14 +127,14 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 int32_t totalOut = (int32_t)(extLen * ratio + 0.5);
                 int32_t outFrames = totalOut - skipOutput;
                 if (outFrames > 0 && outFrames <= frames * 2) {
-                    resampledOld.resize(outFrames * channels);
-                    resampleSincStream(resampledOld.data(), outFrames, floatBuf, frames, channels, ratio,
+                    ensureCapacity(trk.xresampleBuf, trk.xresampleBufCapacity, outFrames * channels);
+                    resampleSincStream(trk.xresampleBuf, outFrames, floatBuf, frames, channels, ratio,
                                        trk.resampleOverlap, trk.resampleOverlapCount);
                     for (int32_t i = 0; i < outFrames * channels; i++) {
-                        if (resampledOld[i] > 1.0f) resampledOld[i] = 1.0f;
-                        else if (resampledOld[i] < -1.0f) resampledOld[i] = -1.0f;
+                        if (trk.xresampleBuf[i] > 1.0f) trk.xresampleBuf[i] = 1.0f;
+                        else if (trk.xresampleBuf[i] < -1.0f) trk.xresampleBuf[i] = -1.0f;
                     }
-                    oldFrames = resampledOld.data();
+                    oldFrames = trk.xresampleBuf;
                     oldCount = outFrames;
                 }
             }
@@ -137,7 +144,8 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             int32_t mixCount = std::min(oldCount, remaining);
             mixCount = std::min(mixCount, trk.preBufFrames - trk.crossfadePreBufPos);
             int32_t startPos = fadeLen - remaining;
-            std::vector<float> mixed(mixCount * channels);
+            ensureCapacity(trk.xmixBuf, trk.xmixBufCapacity, mixCount * channels);
+            float *mixed = trk.xmixBuf;
             for (int32_t i = 0; i < mixCount; i++) {
                 float t = (float)(startPos + i) / fadeLen;
                 // Smoothstep S-Curve: even perceptual distribution
@@ -162,7 +170,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             }
             int32_t pushedMix = 0;
             while (pushedMix < mixCount) {
-                int32_t n = trk.ringBuf->push(mixed.data() + pushedMix * channels,
+                int32_t n = trk.ringBuf->push(mixed + pushedMix * channels,
                                               mixCount - pushedMix, channels);
                 pushedMix += n;
                 if (pushedMix < mixCount) {
@@ -196,18 +204,18 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             int32_t totalOut = (int32_t)(extLen * ratio + 0.5);
             int32_t outFrames = totalOut - skipOutput;
             if (outFrames > 0 && outFrames <= frames * 2) {
-                std::vector<float> resampled(outFrames * channels);
-                resampleSincStream(resampled.data(), outFrames, floatBuf, frames, channels, ratio,
+                ensureCapacity(trk.xresampleBuf, trk.xresampleBufCapacity, outFrames * channels);
+                resampleSincStream(trk.xresampleBuf, outFrames, floatBuf, frames, channels, ratio,
                                    trk.resampleOverlap, trk.resampleOverlapCount);
                 for (int32_t i = 0; i < outFrames * channels; i++) {
-                    if (resampled[i] > 1.0f) resampled[i] = 1.0f;
-                    else if (resampled[i] < -1.0f) resampled[i] = -1.0f;
+                    if (trk.xresampleBuf[i] > 1.0f) trk.xresampleBuf[i] = 1.0f;
+                    else if (trk.xresampleBuf[i] < -1.0f) trk.xresampleBuf[i] = -1.0f;
                 }
-                updateFadeHistory(trk, resampled.data(), outFrames, channels);
-                applyFadeIn(trk, resampled.data(), outFrames, channels);
-                trk.ringBuf->push(resampled.data(), outFrames, channels);
-                trk.lastFrame[0] = resampled[(outFrames - 1) * channels];
-                if (channels > 1) trk.lastFrame[1] = resampled[(outFrames - 1) * channels + 1];
+                updateFadeHistory(trk, trk.xresampleBuf, outFrames, channels);
+                applyFadeIn(trk, trk.xresampleBuf, outFrames, channels);
+                trk.ringBuf->push(trk.xresampleBuf, outFrames, channels);
+                trk.lastFrame[0] = trk.xresampleBuf[(outFrames - 1) * channels];
+                if (channels > 1) trk.lastFrame[1] = trk.xresampleBuf[(outFrames - 1) * channels + 1];
             }
         } else {
             updateFadeHistory(trk, floatBuf, frames, channels);

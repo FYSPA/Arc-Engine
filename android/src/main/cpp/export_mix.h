@@ -144,15 +144,6 @@ static inline int32_t exportMixToWav(
     }
 
     // ─── 3. Create DSP processors ──────────────────────────────────
-    DspProcessor eq;
-    if (gCtl.dsp) {
-        // Copy current EQ settings
-        eq.init(sr, ch);
-        for (int b = 0; b < 10; b++) {
-            // Read current band settings from global EQ
-            // We need to replicate the band config
-        }
-    }
 
     Compressor comp;
     comp.setEnabled(true);

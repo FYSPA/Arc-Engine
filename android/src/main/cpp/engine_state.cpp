@@ -88,6 +88,8 @@ void stopTrack(int index) {
     trk.streamSampleRate = 0;
     trk.resampleOverlapCount = 0;
     memset(trk.resampleOverlap, 0, sizeof(trk.resampleOverlap));
+    if (trk.xmixBuf) { delete[] trk.xmixBuf; trk.xmixBuf = nullptr; trk.xmixBufCapacity = 0; }
+    if (trk.xresampleBuf) { delete[] trk.xresampleBuf; trk.xresampleBuf = nullptr; trk.xresampleBufCapacity = 0; }
 
     // Per-track EQ is NOT deleted here — it persists across play/stop cycles.
     // It's only deleted in cleanupEngine() or when explicitly cleared via FFI.
@@ -121,6 +123,9 @@ void cleanupEngine() {
         if (gCtl.tracks[i].pcmRingBuf) { delete gCtl.tracks[i].pcmRingBuf; gCtl.tracks[i].pcmRingBuf = nullptr; }
         // Per-track EQ
         if (gCtl.tracks[i].dsp) { delete gCtl.tracks[i].dsp; gCtl.tracks[i].dsp = nullptr; }
+        // Crossfade scratch buffers
+        if (gCtl.tracks[i].xmixBuf) { delete[] gCtl.tracks[i].xmixBuf; gCtl.tracks[i].xmixBuf = nullptr; gCtl.tracks[i].xmixBufCapacity = 0; }
+        if (gCtl.tracks[i].xresampleBuf) { delete[] gCtl.tracks[i].xresampleBuf; gCtl.tracks[i].xresampleBuf = nullptr; gCtl.tracks[i].xresampleBufCapacity = 0; }
     }
 
     // Close shared AAudio stream

@@ -93,6 +93,13 @@ struct TrackState {
 
     // Rate-limit for Dart position push callbacks (max 20/sec)
     std::atomic<int64_t> lastCallbackMs{0};
+
+    // Pre-allocated scratch buffers for crossfade/resample in flacEngineWriteCallback.
+    // Avoids heap alloc on every FLAC decode callback (audio-adjacent thread).
+    float *xmixBuf{nullptr};
+    int32_t xmixBufCapacity{0};
+    float *xresampleBuf{nullptr};
+    int32_t xresampleBufCapacity{0};
 };
 
 // ─── Crossfade helpers (inline, after TrackState is complete) ─────────────────
