@@ -35,6 +35,163 @@
 #include <media/NdkMediaExtractor.h>
 #include <media/NdkMediaFormat.h>
 
+// ─── Gapless Helper Functions ───────────────────────────────────────────────
+
+static inline void abortGapless(TrackState &trk, bool abort = false) {
+    trk.gapLessVersion++;
+    if (abort) trk.gapLessAbort = 1;
+    trk.hasNext = 0;
+}
+
+static inline void resetAfterGapless(TrackState &trk, int32_t sr, int32_t ch,
+                                     int64_t totalFrames) {
+    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+    trk.gapLessVersion++;
+    trk.hasNext = 0;
+    trk.sampleRate = sr;
+    trk.channels = ch;
+    trk.totalFrames = totalFrames;
+    trk.writtenFrames = 0;
+    trk.fadeHistPos = 0;
+    trk.fadeHistCount = 0;
+    trk.skipPacing = 0;
+}
+
+// Pre-decode + format check + resample + crossfade push for FLAC gapless.
+// Returns false if gapless should be aborted.
+static bool flacGaplessPrep(TrackState &trk, int32_t ch, int32_t ti) {
+    if (!trk.preBufReady && gCtl.outChannels >= 2) {
+        predecodeFlac(trk, trk.nextPath);
+    }
+    if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
+        bool channelsDiffer = trk.preBufReady && trk.preBufChannels != gCtl.outChannels;
+        if (!trk.preBufReady) {
+            LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
+                 ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
+            abortGapless(trk, true);
+            return false;
+        }
+        if (channelsDiffer) {
+            LOGI("FLAC thread[%d]: channel mismatch — stream=%dch, next=%dch. Aborting gapless.",
+                 ti, gCtl.outChannels, trk.preBufChannels);
+            abortGapless(trk, true);
+            return false;
+        }
+    }
+    bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
+                       && trk.preBufSampleRate > 0);
+    if (srMismatch) {
+        double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
+        int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
+        float *resampled = new float[outFrames * 2];
+        int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
+        auto t0 = std::chrono::steady_clock::now();
+        resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
+        auto t1 = std::chrono::steady_clock::now();
+        int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        delete[] trk.preBuf;
+        trk.preBuf = resampled;
+        trk.preBufFrames = outFrames;
+        LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
+             ti, trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames,
+             outFrames, trk.preBufSampleRate, gCtl.sampleRate,
+             (long long)resampleMs, ringBefore,
+             trk.ringBuf ? trk.ringBuf->available(ch) : -1);
+    }
+    int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
+    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail before=%d, preBufFrames=%d, fadeHistCount=%d",
+         ti, availBefore, trk.preBufFrames, trk.fadeHistCount);
+    writeGaplessCrossfade(trk, ch);
+    int32_t availAfter = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
+    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail after=%d", ti, availAfter);
+    return true;
+}
+
+// Destroy old FLAC decoder, create new one, seek past preBuf.
+// Returns false on failure.
+static bool flacSwapDecoder(TrackState &trk, FLAC__StreamDecoder *&decoder,
+                            PlayState &ps, int32_t ti,
+                            int32_t origPreFrames, bool srMismatch,
+                            int32_t &ch, int32_t &threshold) {
+    trk.preBufFrames = 0;
+    trk.preBufOrigFrames = 0;
+    FLAC__stream_decoder_finish(decoder);
+    FLAC__stream_decoder_delete(decoder);
+    decoder = nullptr;
+    if (srMismatch) {
+        trk.resampleToStream = 1;
+        trk.streamSampleRate = gCtl.sampleRate;
+        LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled",
+             ti, trk.preBufSampleRate, gCtl.sampleRate);
+    } else {
+        trk.resampleToStream = 0;
+        trk.streamSampleRate = 0;
+    }
+    decoder = FLAC__stream_decoder_new();
+    if (!decoder) return false;
+    FLAC__stream_decoder_set_metadata_respond_all(decoder);
+    auto st = FLAC__stream_decoder_init_file(
+        decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
+    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+        return false;
+    }
+    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
+    if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+        return false;
+    }
+    resetAfterGapless(trk, ps.info.sampleRate, ps.info.channels, ps.info.totalSamples);
+    ch = ps.info.channels;
+    threshold = RingBuffer::pacingThreshold(ch);
+    if (origPreFrames > 0) {
+        FLAC__stream_decoder_seek_absolute(decoder, origPreFrames);
+        trk.writtenFrames = origPreFrames;
+    }
+    return true;
+}
+
+// Validate media format via extractor (shared by local + stream gapless).
+// Returns false if format doesn't match.
+static bool checkMediaExtractorFormat(AMediaExtractor *tmpExt, int32_t targetSR,
+                                      int32_t targetCh, int32_t &outSR, int32_t &outCh) {
+    outSR = 0; outCh = 0;
+    bool found = false;
+    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(tmpExt); i++) {
+        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(tmpExt, i);
+        const char *m = NULL;
+        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
+        if (m && strncmp(m, "audio/", 6) == 0) {
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &outSR);
+            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
+            AMediaFormat_delete(fmt);
+            found = true;
+            break;
+        }
+        AMediaFormat_delete(fmt);
+    }
+    return found && outSR == targetSR && outCh == targetCh;
+}
+
+static constexpr float HALF_PI = 1.57079632679f;
+
+static void fadeOutAndDrain(TrackState &trk, int32_t ch) {
+    if (trk.ringBuf && trk.writtenFrames > 0) {
+        std::vector<float> fadeBuf(FADE_FRAMES * ch);
+        for (int i = 0; i < FADE_FRAMES; i++) {
+            float g = sinf((1.0f - (float)i / FADE_FRAMES) * HALF_PI);
+            for (int c = 0; c < ch; c++)
+                fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
+        }
+        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
+    }
+    if (trk.ringBuf) {
+        int to = 100;
+        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 // ─── WAV Playback Thread ─────────────────────────────────────────────────────
 
 void wavPlaybackThread(int ti) {
@@ -80,6 +237,7 @@ void wavPlaybackThread(int ti) {
     std::vector<float> floatBuf(blockSize * ch);
 
     uint64_t _st = 0;
+    int64_t seek = -1;
     read(trk.stopFd, &_st, sizeof(_st)); // Drain phantom data
 
     while (true) {
@@ -97,45 +255,7 @@ void wavPlaybackThread(int ti) {
             } else if (trk.hasNext) {
                 LOGI("WAV thread[%d]: gapless: loading %s (wf=%lld total=%lld)",
                      ti, trk.nextPath, (long long)trk.writtenFrames.load(), (long long)total);
-                { int32_t tmpSR = 0, tmpCh = 0;
-                  if (getWavFormat(trk.nextPath, tmpSR, tmpCh) != 0 ||
-                      tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
-                      LOGI("WAV thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
-                           ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
-                      trk.gapLessVersion++;
-                      trk.gapLessAbort = 1;
-                      trk.hasNext = 0;
-                      break;
-                  }
-                }
-                int32_t _preFrames = writeGaplessCrossfade(trk, ch);
-                int32_t res = loadWavIntoState(trk, trk.nextPath);
-                if (res == 0) {
-                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                    trk.gapLessVersion++;
-                    trk.hasNext = 0;
-                } else {
-                    LOGI("WAV thread[%d]: gapless: load failed %d", ti, res);
-                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                    trk.gapLessVersion++;
-                    trk.hasNext = 0;
-                    trk.crossfading = 0;
-                    trk.crossfadeRemaining = 0;
-                }
-                // Refresh local variables — loadWavIntoState replaced everything
-                data = trk.wavData;
-                dataSize = trk.wavDataSize;
-                fs = trk.wavFrameSize;
-                sr = trk.sampleRate;
-                ch = trk.channels;
-                bps = trk.bitsPerSample;
-                total = trk.totalFrames;
-                floatBuf.resize(blockSize * ch);
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
-                LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
-                continue;
+                goto wav_gapless;
             } else break;
         }
 
@@ -144,7 +264,7 @@ void wavPlaybackThread(int ti) {
             continue;
         }
 
-        int64_t seek = trk.seekToFrame.exchange(-1);
+        seek = trk.seekToFrame.exchange(-1);
         if (seek >= 0) {
             trk.writtenFrames = seek < total ? seek : total;
             if (trk.ringBuf) trk.ringBuf->reset();
@@ -152,44 +272,39 @@ void wavPlaybackThread(int ti) {
             // If seek reached or passed the end, trigger gapless immediately
             if (total - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
                 LOGI("WAV thread[%d]: seek-to-end -> forcing gapless transition", ti);
-                { int32_t tmpSR = 0, tmpCh = 0;
-                  if (getWavFormat(trk.nextPath, tmpSR, tmpCh) != 0 ||
-                      tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
-                      LOGI("WAV thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
-                           ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
-                      trk.gapLessVersion++;
-                      trk.gapLessAbort = 1;
-                      trk.hasNext = 0;
-                      break;
-                  }
-                }
-                int32_t _preFrames = writeGaplessCrossfade(trk, ch);
-                int32_t res = loadWavIntoState(trk, trk.nextPath);
-                if (res == 0) {
-                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                    trk.gapLessVersion++;
-                } else {
-                    LOGI("WAV thread[%d]: seek-gapless: load failed %d", ti, res);
-                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                    trk.gapLessVersion++;
-                    trk.crossfading = 0;
-                    trk.crossfadeRemaining = 0;
-                }
-                trk.hasNext = 0;
-                data = trk.wavData;
-                dataSize = trk.wavDataSize;
-                fs = trk.wavFrameSize;
-                sr = trk.sampleRate;
-                ch = trk.channels;
-                bps = trk.bitsPerSample;
-                total = trk.totalFrames;
-                floatBuf.resize(blockSize * ch);
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
-                LOGI("WAV thread[%d]: seek-gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
+                goto wav_gapless;
             }
         }
+
+      wav_gapless:
+        { int32_t tmpSR = 0, tmpCh = 0;
+          if (getWavFormat(trk.nextPath, tmpSR, tmpCh) != 0 ||
+              tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+              LOGI("WAV thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
+                   ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
+              abortGapless(trk, true);
+              break;
+          }
+        }
+        writeGaplessCrossfade(trk, ch);
+        { int32_t res = loadWavIntoState(trk, trk.nextPath);
+          if (res != 0) {
+              LOGI("WAV thread[%d]: gapless: load failed %d", ti, res);
+              trk.crossfading = 0;
+              trk.crossfadeRemaining = 0;
+          }
+        }
+        resetAfterGapless(trk, trk.sampleRate, trk.channels, trk.totalFrames);
+        data = trk.wavData;
+        dataSize = trk.wavDataSize;
+        fs = trk.wavFrameSize;
+        sr = trk.sampleRate;
+        ch = trk.channels;
+        bps = trk.bitsPerSample;
+        total = trk.totalFrames;
+        floatBuf.resize(blockSize * ch);
+        LOGI("WAV thread[%d]: gapless: new total=%lld ch=%d sr=%d data=%p", ti, (long long)total, ch, sr, (void*)data);
+        continue;
 
         int32_t effThreshold = (trk.hasNext && !trk.loop) ? std::min(threshold, 4096) : threshold;
         if (trk.ringBuf && trk.ringBuf->available(ch) > effThreshold && !trk.skipPacing) {
@@ -237,23 +352,7 @@ void wavPlaybackThread(int ti) {
     LOGI("WAV thread[%d]: loop exit wf=%lld total=%lld", ti,
          (long long)trk.writtenFrames.load(), (long long)total);
 
-    // Fade-out: write FADE_FRAMES ramping from last sample to silence
-    if (trk.ringBuf && trk.writtenFrames > 0) {
-        std::vector<float> fadeBuf(FADE_FRAMES * ch);
-        for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
-            for (int c = 0; c < ch; c++)
-                fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
-        }
-        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
-    }
-
-    // Drain ring buffer so fade-out / last data is consumed before cleanup
-    if (trk.ringBuf) {
-        int to = 100;
-        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    fadeOutAndDrain(trk, ch);
 
     delete[] data;
     trk.wavData = nullptr;
@@ -390,12 +489,23 @@ void flacPlaybackThread(int ti) {
                         for (int32_t i = 0; i < preRemaining; i++) {
                             float t = (float)(consumed + i) / fadeLen;
                             if (t > 1.0f) t = 1.0f;
-                            float fadeIn = sinf(t * 1.57079632679f);
+                            float fadeIn = sinf(t * HALF_PI);
                             for (int32_t c = 0; c < trk.preBufChannels; c++)
                                 faded[i * trk.preBufChannels + c] =
                                     trk.preBuf[(consumed + i) * trk.preBufChannels + c] * fadeIn;
                         }
-                        trk.ringBuf->push(faded.data(), preRemaining, trk.preBufChannels);
+                        // Push ALL remaining faded frames — retry until ring buffer has space
+                        {
+                            int32_t pushed = 0;
+                            while (pushed < preRemaining) {
+                                int32_t n = trk.ringBuf->push(faded.data() + pushed * trk.preBufChannels,
+                                                              preRemaining - pushed, trk.preBufChannels);
+                                pushed += n;
+                                if (pushed < preRemaining) {
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                }
+                            }
+                        }
                         LOGI("FLAC thread[%d]: crossfade done — pushed %d remaining preBuf frames (faded)", ti, preRemaining);
                     }
                     trk.crossfading = 0;
@@ -406,114 +516,16 @@ void flacPlaybackThread(int ti) {
                     // Don't clear preBufFrames/preBufOrigFrames — decoder swap needs them
                 } else {
                     // Normal gapless: pre-decode, resample, crossfade push
-                    if (!trk.preBufReady && gCtl.outChannels >= 2) {
-                        predecodeFlac(trk, trk.nextPath);
-                    }
-                    if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
-                        bool channelsDiffer = false;
-                        if (trk.preBufReady && trk.preBufChannels != gCtl.outChannels) {
-                            channelsDiffer = true;
-                        }
-                        if (!trk.preBufReady) {
-                            LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
-                                 ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
-                            trk.gapLessVersion++;
-                            trk.gapLessAbort = 1;
-                            trk.hasNext = 0;
-                            break;
-                        }
-                        if (channelsDiffer) {
-                            LOGI("FLAC thread[%d]: channel mismatch — stream=%dch, next=%dch. Aborting gapless.",
-                                 ti, gCtl.outChannels, trk.preBufChannels);
-                            trk.gapLessVersion++;
-                            trk.gapLessAbort = 1;
-                            trk.hasNext = 0;
-                            break;
-                        }
-                    }
-                    // Resample preBuf if SR mismatch
-                    bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
-                                       && trk.preBufSampleRate > 0);
-                    if (srMismatch) {
-                        double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
-                        int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
-                        float *resampled = new float[outFrames * 2];
-                        int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
-                        auto t0 = std::chrono::steady_clock::now();
-                        resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
-                        auto t1 = std::chrono::steady_clock::now();
-                        int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                        delete[] trk.preBuf;
-                        trk.preBuf = resampled;
-                        trk.preBufFrames = outFrames;
-                        LOGI("FLAC thread[%d]: resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
-                             ti, trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames,
-                             outFrames, trk.preBufSampleRate, gCtl.sampleRate,
-                             (long long)resampleMs, ringBefore,
-                             trk.ringBuf ? trk.ringBuf->available(ch) : -1);
-                    }
-                    // Crossfade: push mixed audio into ring buffer
-                    int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail before=%d, preBufFrames=%d, fadeHistCount=%d",
-                         ti, availBefore, trk.preBufFrames, trk.fadeHistCount);
-                    writeGaplessCrossfade(trk, ch);
-                    int32_t availAfter = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                    LOGI("FLAC thread[%d]: gapless crossfade: ringBuf avail after=%d", ti, availAfter);
+                    if (!flacGaplessPrep(trk, ch, ti)) break;
                 }
                 // Shared decoder swap (both crossfade and normal paths converge here)
                 {
                     int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
                     bool srMismatch = (trk.preBufOrigFrames > 0);
-                    trk.preBufFrames = 0;
-                    trk.preBufOrigFrames = 0;
-                    // Destroy old decoder
-                    FLAC__stream_decoder_finish(decoder);
-                    FLAC__stream_decoder_delete(decoder);
-                    decoder = nullptr;
-                    // If SR mismatch: enable real-time resampling in callback
-                    if (srMismatch) {
-                        trk.resampleToStream = 1;
-                        trk.streamSampleRate = gCtl.sampleRate;
-                        LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled",
-                             ti, trk.preBufSampleRate, gCtl.sampleRate);
-                    } else {
-                        trk.resampleToStream = 0;
-                        trk.streamSampleRate = 0;
-                    }
-                    // Create new decoder
-                    decoder = FLAC__stream_decoder_new();
-                    if (!decoder) break;
-                    FLAC__stream_decoder_set_metadata_respond_all(decoder);
-                    st = FLAC__stream_decoder_init_file(
-                        decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
-                    if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-                        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                    if (!flacSwapDecoder(trk, decoder, ps, ti, origPreFrames, srMismatch, ch, threshold)) {
                         trk.hasNext = 0;
                         break;
                     }
-                    FLAC__stream_decoder_process_until_end_of_metadata(decoder);
-                    if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
-                        FLAC__stream_decoder_delete(decoder); decoder = nullptr;
-                        trk.hasNext = 0;
-                        break;
-                    }
-                    strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                    trk.gapLessVersion++;
-                    trk.hasNext = 0;
-                    trk.sampleRate = ps.info.sampleRate;
-                    trk.channels = ps.info.channels;
-                    trk.totalFrames = ps.info.totalSamples;
-                    trk.writtenFrames = 0;
-                    ch = ps.info.channels;
-                    threshold = RingBuffer::pacingThreshold(ch);
-                    // Seek past pre-decoded frames
-                    if (origPreFrames > 0) {
-                        FLAC__stream_decoder_seek_absolute(decoder, origPreFrames);
-                        trk.writtenFrames = origPreFrames;
-                    }
-                    trk.fadeHistPos = 0;
-                    trk.fadeHistCount = 0;
-                    trk.skipPacing = 0;
                     LOGI("FLAC thread[%d]: gapless -> %s (seek to %lld)", ti, trk.path, (long long)origPreFrames);
                     continue;
                 }
@@ -533,109 +545,14 @@ void flacPlaybackThread(int ti) {
             // If seek reaches/passes end and next track is queued, trigger gapless immediately
             if (trk.totalFrames - seek <= SEEKGAP_THRESHOLD && trk.hasNext && !trk.loop) {
                 LOGI("FLAC thread[%d]: seek-to-end -> forcing gapless transition", ti);
-                // Pre-decode first (need source SR for mismatch detection)
-                if (!trk.preBufReady && gCtl.outChannels >= 2) {
-                    predecodeFlac(trk, trk.nextPath);
-                }
-                // Check channel mismatch — can't handle, abort
-                if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
-                    bool channelsDiffer = false;
-                    if (trk.preBufReady && trk.preBufChannels != gCtl.outChannels) {
-                        channelsDiffer = true;
-                    }
-                    if (!trk.preBufReady) {
-                        LOGI("FLAC thread[%d]: format mismatch — stream=%dHz/%dch, next=%s. Aborting gapless.",
-                             ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
-                        break;
-                    }
-                    if (channelsDiffer) {
-                        LOGI("FLAC thread[%d]: channel mismatch — stream=%dch, next=%dch. Aborting gapless.",
-                             ti, gCtl.outChannels, trk.preBufChannels);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
-                        break;
-                    }
-                }
-                // Resample preBuf if SR mismatch — save original frame count for seek
+                if (!flacGaplessPrep(trk, ch, ti)) break;
                 int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
                 bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
                                    && trk.preBufSampleRate > 0);
-                if (srMismatch) {
-                    double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
-                    int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
-                    float *resampled = new float[outFrames * 2];
-                    int32_t ringBefore = trk.ringBuf ? trk.ringBuf->available(ch) : -1;
-                    auto t0 = std::chrono::steady_clock::now();
-                    resampleSinc(resampled, outFrames, trk.preBuf, trk.preBufFrames, 2, ratio);
-                    auto t1 = std::chrono::steady_clock::now();
-                    int64_t resampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-                    delete[] trk.preBuf;
-                    trk.preBuf = resampled;
-                    trk.preBufFrames = outFrames;
-                    LOGI("FLAC thread[%d]: seek-resampled preBuf %d→%d frames (%dHz→%dHz) [%lldms] ringBuf=%d→%d",
-                         ti, origPreFrames, outFrames, trk.preBufSampleRate, gCtl.sampleRate,
-                         (long long)resampleMs, ringBefore,
-                         trk.ringBuf ? trk.ringBuf->available(ch) : -1);
-                }
-                // Crossfade: push mixed audio into ring buffer
-                int32_t availBefore = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                LOGI("FLAC thread[%d]: seek-crossfade: ringBuf avail before=%d, preBufFrames=%d, fadeHistCount=%d",
-                     ti, availBefore, trk.preBufFrames, trk.fadeHistCount);
-                writeGaplessCrossfade(trk, ch);
-                int32_t availAfter = trk.ringBuf ? trk.ringBuf->available(ch) : 0;
-                LOGI("FLAC thread[%d]: seek-crossfade: ringBuf avail after=%d", ti, availAfter);
-                // Destroy old decoder (do NOT create new one yet)
-                FLAC__stream_decoder_finish(decoder);
-                FLAC__stream_decoder_delete(decoder);
-                decoder = nullptr;
-                // If SR mismatch: enable real-time resampling in callback (no stream recreation)
-                if (srMismatch || trk.preBufOrigFrames > 0) {
-                    trk.resampleToStream = 1;
-                    trk.streamSampleRate = gCtl.sampleRate;
-                    LOGI("FLAC thread[%d]: SR mismatch — real-time resample %d→%d enabled (seek-gapless)",
-                         ti, trk.preBufSampleRate, gCtl.sampleRate);
-                } else {
-                    trk.resampleToStream = 0;
-                    trk.streamSampleRate = 0;
-                }
-                // Create new decoder (now that stream is correct SR)
-                decoder = FLAC__stream_decoder_new();
-                if (!decoder) break;
-                FLAC__stream_decoder_set_metadata_respond_all(decoder);
-                st = FLAC__stream_decoder_init_file(
-                    decoder, trk.nextPath, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
-                if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
+                if (!flacSwapDecoder(trk, decoder, ps, ti, origPreFrames, srMismatch, ch, threshold)) {
                     trk.hasNext = 0;
                     break;
                 }
-                FLAC__stream_decoder_process_until_end_of_metadata(decoder);
-                if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
-                    FLAC__stream_decoder_delete(decoder); decoder = nullptr;
-                    trk.hasNext = 0;
-                    break;
-                }
-                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                trk.gapLessVersion++;
-                trk.hasNext = 0;
-                trk.sampleRate = ps.info.sampleRate;
-                trk.channels = ps.info.channels;
-                trk.totalFrames = ps.info.totalSamples;
-                trk.writtenFrames = 0;
-                ch = ps.info.channels;
-                threshold = RingBuffer::pacingThreshold(ch);
-                // Seek past pre-decoded frames (use original count, not resampled)
-                if (origPreFrames > 0) {
-                    FLAC__stream_decoder_seek_absolute(decoder, origPreFrames);
-                    trk.writtenFrames = origPreFrames;
-                }
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
                 LOGI("FLAC thread[%d]: seek-gapless -> %s (seek to %lld)", ti, trk.path, (long long)origPreFrames);
             }
         }
@@ -665,23 +582,7 @@ void flacPlaybackThread(int ti) {
         }
     }
 
-    // Fade-out: write FADE_FRAMES ramping from last sample to silence
-    if (trk.ringBuf && trk.writtenFrames > 0) {
-        std::vector<float> fadeBuf(FADE_FRAMES * ch);
-        for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
-            for (int c = 0; c < ch; c++)
-                fadeBuf[i * ch + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
-        }
-        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
-    }
-
-    // Drain ring buffer so fade-out / last data is consumed before cleanup
-    if (trk.ringBuf) {
-        int to = 100;
-        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    fadeOutAndDrain(trk, ch);
 
     if (decoder) FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
@@ -823,27 +724,12 @@ void mediaPlaybackThread(int ti) {
                         break;
                     }
                     int32_t tmpSR = 0, tmpCh = 0;
-                    bool found = false;
-                    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(tmpExt); i++) {
-                        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(tmpExt, i);
-                        const char *m = NULL;
-                        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-                        if (m && strncmp(m, "audio/", 6) == 0) {
-                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &tmpSR);
-                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &tmpCh);
-                            AMediaFormat_delete(fmt);
-                            found = true;
-                            break;
-                        }
-                        AMediaFormat_delete(fmt);
-                    }
+                    bool fmtOk = checkMediaExtractorFormat(tmpExt, gCtl.sampleRate, gCtl.outChannels, tmpSR, tmpCh);
                     AMediaExtractor_delete(tmpExt); close(tmpFd);
-                    if (!found || tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                    if (!fmtOk) {
                         LOGI("Media thread[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
                              ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
+                        abortGapless(trk, true);
                         break;
                     }
                 }
@@ -986,23 +872,7 @@ void mediaPlaybackThread(int ti) {
         }
     }
 
-    // Fade-out: write FADE_FRAMES ramping from last sample to silence
-    if (trk.ringBuf && trk.writtenFrames > 0) {
-        std::vector<float> fadeBuf(FADE_FRAMES * outCh);
-        for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
-            for (int c = 0; c < outCh; c++)
-                fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
-        }
-        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, outCh);
-    }
-
-    // Drain ring buffer so fade-out / last data is consumed before cleanup
-    if (trk.ringBuf) {
-        int to = 100;
-        while (trk.ringBuf->available(outCh) > 0 && to-- > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    fadeOutAndDrain(trk, outCh);
 
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);
     AMediaExtractor_delete(extractor); close(fd);
@@ -1136,27 +1006,12 @@ void mediaStreamPlaybackThread(int ti) {
                         break;
                     }
                     int32_t tmpSR = 0, tmpCh = 0;
-                    bool found = false;
-                    for (int32_t i = 0; i < AMediaExtractor_getTrackCount(tmpExt); i++) {
-                        AMediaFormat *fmt = AMediaExtractor_getTrackFormat(tmpExt, i);
-                        const char *m = NULL;
-                        AMediaFormat_getString(fmt, AMEDIAFORMAT_KEY_MIME, &m);
-                        if (m && strncmp(m, "audio/", 6) == 0) {
-                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &tmpSR);
-                            AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &tmpCh);
-                            AMediaFormat_delete(fmt);
-                            found = true;
-                            break;
-                        }
-                        AMediaFormat_delete(fmt);
-                    }
+                    bool fmtOk = checkMediaExtractorFormat(tmpExt, gCtl.sampleRate, gCtl.outChannels, tmpSR, tmpCh);
                     AMediaExtractor_delete(tmpExt);
-                    if (!found || tmpSR != gCtl.sampleRate || tmpCh != gCtl.outChannels) {
+                    if (!fmtOk) {
                         LOGI("Media stream[%d]: format mismatch — stream=%dHz/%dch, next=%s (%dHz/%dch). Aborting gapless.",
                              ti, gCtl.sampleRate, gCtl.outChannels, trk.nextPath, tmpSR, tmpCh);
-                        trk.gapLessVersion++;
-                        trk.gapLessAbort = 1;
-                        trk.hasNext = 0;
+                        abortGapless(trk, true);
                         break;
                     }
                 }
@@ -1299,23 +1154,7 @@ void mediaStreamPlaybackThread(int ti) {
         }
     }
 
-    // Fade-out: write FADE_FRAMES ramping from last sample to silence
-    if (trk.ringBuf && trk.writtenFrames > 0) {
-        std::vector<float> fadeBuf(FADE_FRAMES * outCh);
-        for (int i = 0; i < FADE_FRAMES; i++) {
-            float g = sinf((1.0f - (float)i / FADE_FRAMES) * 1.57079632679f);
-            for (int c = 0; c < outCh; c++)
-                fadeBuf[i * outCh + c] = (c < 2 ? trk.lastFrame[c] : 0) * g;
-        }
-        trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, outCh);
-    }
-
-    // Drain ring buffer so fade-out / last data is consumed before cleanup
-    if (trk.ringBuf) {
-        int to = 100;
-        while (trk.ringBuf->available(outCh) > 0 && to-- > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    fadeOutAndDrain(trk, outCh);
 
     AMediaCodec_stop(codec); AMediaCodec_delete(codec);
     AMediaExtractor_delete(extractor);

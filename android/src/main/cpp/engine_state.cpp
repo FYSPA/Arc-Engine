@@ -163,7 +163,6 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     if (!trk.ringBuf) return 0;
 
     trk.skipPacing = 1;
-    int32_t avail = trk.ringBuf->available(fadeCh);
 
     // Convert ms→frames using actual sample rate
     int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
@@ -175,7 +174,16 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     // ─── Caso 1: crossfade=0 ───
     if (fadeLen <= 0) {
         if (preFrames > 0) {
-            trk.ringBuf->push(trk.preBuf, preFrames, trk.preBufChannels);
+            // Push ALL preBuf frames — retry until ring buffer has space
+            int32_t pushed = 0;
+            while (pushed < preFrames) {
+                int32_t n = trk.ringBuf->push(trk.preBuf + pushed * trk.preBufChannels,
+                                              preFrames - pushed, trk.preBufChannels);
+                pushed += n;
+                if (pushed < preFrames) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
         }
         delete[] trk.preBuf; trk.preBuf = nullptr;
         trk.preBufReady = 0; trk.preBufFrames = 0;
@@ -193,13 +201,20 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
     }
 
     // ─── Caso 3: preBuf + fadeLen > 0 → GAPLESS TRANSITION ───
-    // Push preBuf at full volume. Old track's frames in the ring buffer
+    // Push ALL preBuf at full volume. Old track's frames in the ring buffer
     // play naturally, then seamlessly transition to the new track.
-    // No fadeHistory replay → no double-play.
-    int32_t space = trk.ringBuf->capacity(fadeCh) - avail;
-    int32_t pushLen = std::min(preFrames, space > 0 ? space : 0);
-    if (pushLen > 0) {
-        trk.ringBuf->push(trk.preBuf, pushLen, trk.preBufChannels);
+    // Retry until ring buffer has space — preBuf MUST be fully pushed
+    // because the new decoder seeks past origPreFrames in the source file.
+    {
+        int32_t pushed = 0;
+        while (pushed < preFrames) {
+            int32_t n = trk.ringBuf->push(trk.preBuf + pushed * trk.preBufChannels,
+                                          preFrames - pushed, trk.preBufChannels);
+            pushed += n;
+            if (pushed < preFrames) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
     }
 
     trk.crossfading = 0;

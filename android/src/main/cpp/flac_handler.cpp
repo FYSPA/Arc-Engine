@@ -160,13 +160,30 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 for (int32_t i = 0; i < mixCount * channels; i++)
                     mixed[i] *= cv;
             }
-            trk.ringBuf->push(mixed.data(), mixCount, channels);
-            trk.crossfadeRemaining -= mixCount;
+            int32_t pushedMix = 0;
+            while (pushedMix < mixCount) {
+                int32_t n = trk.ringBuf->push(mixed.data() + pushedMix * channels,
+                                              mixCount - pushedMix, channels);
+                pushedMix += n;
+                if (pushedMix < mixCount) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            trk.crossfadeRemaining -= pushedMix;
             trk.lastFrame[0] = mixed[(mixCount - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = mixed[(mixCount - 1) * channels + 1];
             // Push any remaining old frames (after crossfade ends) at full volume
             if (oldCount > mixCount) {
-                trk.ringBuf->push(oldFrames + mixCount * channels, oldCount - mixCount, channels);
+                int32_t rem = oldCount - mixCount;
+                float *remData = oldFrames + mixCount * channels;
+                int32_t pushed = 0;
+                while (pushed < rem) {
+                    int32_t n = trk.ringBuf->push(remData + pushed * channels, rem - pushed, channels);
+                    pushed += n;
+                    if (pushed < rem) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
+                }
                 trk.lastFrame[0] = oldFrames[(oldCount - 1) * channels];
                 if (channels > 1) trk.lastFrame[1] = oldFrames[(oldCount - 1) * channels + 1];
             }
