@@ -328,7 +328,7 @@ void wavPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
                 if (trk.repeatCount.load() <= 0 && rc > 0) {
-                    if (trk.hasNext) goto wav_gapless; else break;
+                    break;
                 }
                 continue;
             } else if (trk.hasNext) {
@@ -546,7 +546,7 @@ void flacPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
                 if (trk.repeatCount.load() <= 0 && rc > 0) {
-                    if (trk.hasNext) goto flac_gapless; else break;
+                    break;
                 }
                 continue;
             } else if (trk.hasNext) {
@@ -652,7 +652,7 @@ void flacPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
                 if (trk.repeatCount.load() <= 0 && rc > 0) {
-                    if (trk.hasNext) goto flac_gapless; else break;
+                    break;
                 }
                 continue;
             }
@@ -757,7 +757,7 @@ void mediaPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
                 if (trk.repeatCount.load() <= 0 && rc > 0) {
-                    if (trk.hasNext) goto media_force_gapless; else break;
+                    break;
                 }
                 continue;
             } else if (trk.hasNext) {
@@ -975,7 +975,7 @@ void mediaStreamPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 if (trk.ringBuf) trk.ringBuf->reset();
                 if (trk.repeatCount.load() <= 0 && rc > 0) {
-                    if (trk.hasNext) goto stream_force_gapless; else break;
+                    break;
                 }
                 continue;
             } else if (trk.hasNext) {
