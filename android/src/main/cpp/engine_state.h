@@ -52,8 +52,8 @@ struct TrackState {
     std::atomic<int> loop{0};
     std::atomic<int64_t> seekToFrame{-1};
 
-    float volume{1.0f};
-    float pan{0.0f};
+    std::atomic<float> volume{1.0f};
+    std::atomic<float> pan{0.0f};
     float lastFrame[2]{};
 
     char nextPath[512]{0};
@@ -113,22 +113,24 @@ inline void updateFadeHistory(TrackState &trk, const float *buf, int32_t frames,
 inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch) {
     if (!trk.crossfading || trk.fadeLen <= 0) return;
     int32_t fadeLen = trk.fadeLen.load();
+    int32_t rem = trk.crossfadeRemaining.load();
+    if (rem <= 0) {
+        trk.crossfading = 0;
+        trk.crossfadeRemaining = 0;
+        return;
+    }
     for (int32_t i = 0; i < frames; i++) {
-        int32_t rem = trk.crossfadeRemaining.load();
-        if (rem <= 0) {
-            trk.crossfading = 0;
-            trk.crossfadeRemaining = 0;
-            return;
-        }
+        if (rem <= 0) break;
         float t = (float)(fadeLen - rem) / fadeLen;
         float t2 = t * t;
         float t3 = t2 * t;
         float g = 3.0f * t2 - 2.0f * t3;  // smoothstep fade-in
         for (int32_t c = 0; c < ch; c++)
             buf[i * ch + c] *= g;
-        trk.crossfadeRemaining--;
+        rem--;
     }
-    if (trk.crossfadeRemaining.load() <= 0) {
+    trk.crossfadeRemaining = rem;
+    if (rem <= 0) {
         trk.crossfading = 0;
         trk.crossfadeRemaining = 0;
     }

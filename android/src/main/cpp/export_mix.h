@@ -165,7 +165,6 @@ static inline int32_t exportMixToWav(
 
     // ─── 4. Mix loop ──────────────────────────────────────────────
     float *mixBuf = new float[BLOCK * ch];
-    float *tempBuf = new float[BLOCK * ch];
     int64_t framesWritten = 0;
 
     while (framesWritten < maxFrames) {
@@ -247,7 +246,6 @@ static inline int32_t exportMixToWav(
     // ─── 5. Finalize ──────────────────────────────────────────────
     writer.close();
     delete[] mixBuf;
-    delete[] tempBuf;
     for (int t = 0; t < MAX_TRACKS; t++) tracks[t].free();
 
     if (onProgress) onProgress(1.0f);

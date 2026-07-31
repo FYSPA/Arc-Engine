@@ -29,7 +29,6 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <aaudio/AAudio.h>
-#include <errno.h>
 #include <FLAC/stream_decoder.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
@@ -776,12 +775,7 @@ void mediaPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 outCh = ch; threshold = RingBuffer::pacingThreshold(ch);
                 inputDone = false; outputDone = false;
-                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                trk.gapLessVersion++;
-                trk.hasNext = 0;
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
+                resetAfterGapless(trk, sr, ch, trk.totalFrames);
                 LOGI("Media thread[%d]: gapless -> %s", ti, trk.path);
                 continue; }
             } else break;
@@ -818,6 +812,7 @@ void mediaPlaybackThread(int ti) {
             AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
             AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
             AMediaFormat_delete(newFmt);
+            threshold = RingBuffer::pacingThreshold(outCh);
             continue;
         }
 
@@ -1055,12 +1050,7 @@ void mediaStreamPlaybackThread(int ti) {
                 trk.writtenFrames = 0;
                 outCh = ch; threshold = RingBuffer::pacingThreshold(ch);
                 inputDone = false; outputDone = false;
-                strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
-                trk.gapLessVersion++;
-                trk.hasNext = 0;
-                trk.fadeHistPos = 0;
-                trk.fadeHistCount = 0;
-                trk.skipPacing = 0;
+                resetAfterGapless(trk, sr, ch, trk.totalFrames);
                 LOGI("Media stream[%d]: gapless -> %s", ti, trk.path);
                 continue; }
             } else break;
@@ -1102,6 +1092,7 @@ void mediaStreamPlaybackThread(int ti) {
             AMediaFormat *newFmt = AMediaCodec_getOutputFormat(codec);
             AMediaFormat_getInt32(newFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &outCh);
             AMediaFormat_delete(newFmt);
+            threshold = RingBuffer::pacingThreshold(outCh);
             continue;
         }
 

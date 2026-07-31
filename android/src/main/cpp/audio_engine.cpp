@@ -186,7 +186,7 @@ void predecodeFlac(TrackState &trk, const char *path) {
         trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
         trk.preBufSampleRate = ctx->sampleRate;
         trk.preBufOrigFrames = 0;
-        // Pre-resample if SR mismatch — eliminates70-158ms delay during gapless transition
+        // Pre-resample if SR mismatch — eliminates 70-158ms delay during gapless transition
         if (gCtl.sampleRate > 0 && ctx->sampleRate > 0 && ctx->sampleRate != gCtl.sampleRate) {
             double ratio = (double)gCtl.sampleRate / ctx->sampleRate;
             int32_t outFrames = (int32_t)(ctx->totalFrames * ratio);
