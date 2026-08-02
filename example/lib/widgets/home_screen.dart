@@ -242,7 +242,9 @@ class _HomeScreenState extends State<HomeScreen> {
           t.running = true;
           t.position = p.position.inMilliseconds;
           t.duration = p.duration.inMilliseconds;
-          t.sliderValue = t.duration > 0 ? t.position.toDouble() : 0.0;
+          t.sliderValue = t.duration > 0
+              ? t.position.toDouble().clamp(0.0, t.duration.toDouble())
+              : 0.0;
         } else if (t.running) {
           t.running = false;
           t.paused = false;
@@ -252,7 +254,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_tracks.isNotEmpty && AudioEngine.isPlaying) {
         _position = AudioEngine.getPosition();
         _duration = AudioEngine.getDuration();
-        _sliderValue = _duration > 0 ? _position.toDouble() : 0.0;
+        _sliderValue = _duration > 0
+            ? _position.toDouble().clamp(0.0, _duration.toDouble())
+            : 0.0;
         _engineRunning = true;
       } else if (_engineRunning) {
         setState(() {

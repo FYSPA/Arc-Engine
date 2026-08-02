@@ -524,12 +524,13 @@ void flacPlaybackThread(int ti) {
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
             int64_t remaining = ps.info.totalSamples - trk.writtenFrames;
             if (remaining > 0 && remaining <= fadeLen) {
-                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d)",
-                     ti, (long long)remaining, fadeLen);
+                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d) preBufPos=%d",
+                     ti, (long long)remaining, fadeLen, trk.crossfadePreBufPos);
                 trk.fadeLen.store(fadeLen);
                 trk.crossfading = 1;
                 trk.crossfadeRemaining = (int32_t)remaining;
-                trk.crossfadePreBufPos = 0;
+                // Do NOT reset crossfadePreBufPos — if re-triggered after applyFadeIn
+                // resets crossfading, we must preserve write callback's progress.
                 // Do NOT goto flac_gapless — let old decoder keep running.
                 // Write callback will mix old+new frames and push to ring buffer.
             }
@@ -595,11 +596,20 @@ void flacPlaybackThread(int ti) {
                 {
                     int32_t origPreFrames = trk.preBufOrigFrames > 0 ? trk.preBufOrigFrames : trk.preBufFrames;
                     bool srMismatch = (trk.preBufOrigFrames > 0);
+                    LOGI("FLAC thread[%d]: shared section — origPreFrames=%d preBufOrigFrames=%d preBufFrames=%d preBufReady=%d srMismatch=%d",
+                         ti, origPreFrames, trk.preBufOrigFrames, trk.preBufFrames, trk.preBufReady.load(), srMismatch);
                     if (!flacSwapDecoder(trk, decoder, ps, ti, origPreFrames, srMismatch, ch, threshold)) {
                         trk.hasNext = 0;
                         break;
                     }
                     LOGI("FLAC thread[%d]: gapless -> %s (seek to %lld)", ti, trk.path, (long long)origPreFrames);
+                    // Reset rate limit so position push succeeds immediately post-swap
+                    trk.lastCallbackMs = 0;
+                    // Push position immediately so Dart shows correct position post-swap
+                    if (trk.sampleRate > 0) {
+                        int64_t posMs = trk.writtenFrames.load() * 1000 / trk.sampleRate;
+                        pushPositionToDart(ti, posMs, true, trk.lastCallbackMs, gCtl.dartPort);
+                    }
                     continue;
                 }
             } else break;
@@ -647,10 +657,22 @@ void flacPlaybackThread(int ti) {
             pushErrorToDart(ti, "FLAC decode error", gCtl.dartPort);
             break;
         }
+
+        // Crossfade completed — transition immediately instead of waiting for EOS.
+        // applyFadeIn set crossfading=0, but trigger could re-fire if we loop back.
+        // Prevent re-trigger by transitioning now.
+        if (!trk.crossfading.load() && trk.crossfadePreBufPos > 0
+            && trk.hasNext && trk.repeatCount.load() == 0) {
+            LOGI("FLAC thread[%d]: crossfade completed — transitioning immediately (preBufPos=%d/%d)",
+                 ti, trk.crossfadePreBufPos, trk.preBufFrames);
+            goto flac_gapless;
+        }
+
         if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) {
-            LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d",
+            LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d crossfading=%d cfRemaining=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
-                 trk.hasNext.load(), trk.repeatCount.load());
+                 trk.hasNext.load(), trk.repeatCount.load(),
+                 trk.crossfading.load(), trk.crossfadeRemaining.load());
             if (trk.repeatCount.load() != 0) {
                 int rc = trk.repeatCount.load();
                 if (rc > 0) trk.repeatCount = rc - 1;

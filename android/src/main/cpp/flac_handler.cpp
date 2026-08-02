@@ -111,6 +111,9 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     DspProcessor *eq = getTrackEq(state->trackIndex);
     if (eq) eq->process(floatBuf, frames, channels);
 
+    // Track actual frames pushed to ring buffer for writtenFrames accuracy
+    int32_t actualPushed = 0;
+
     if (trk.ringBuf) {
         // ─── CROSSFADE: mix old decoder frames with preBuf in real-time ───
         if (trk.crossfading.load() && trk.preBuf && trk.crossfadeRemaining.load() > 0
@@ -195,6 +198,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 trk.lastFrame[0] = oldFrames[(oldCount - 1) * channels];
                 if (channels > 1) trk.lastFrame[1] = oldFrames[(oldCount - 1) * channels + 1];
             }
+            actualPushed = oldCount;  // all frames pushed (mixed + post-crossfade)
         } else if (trk.resampleToStream && trk.streamSampleRate > 0 && trk.sampleRate > 0
             && trk.streamSampleRate != trk.sampleRate) {
             double ratio = (double)trk.streamSampleRate / trk.sampleRate;
@@ -216,6 +220,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 trk.ringBuf->push(trk.xresampleBuf, outFrames, channels);
                 trk.lastFrame[0] = trk.xresampleBuf[(outFrames - 1) * channels];
                 if (channels > 1) trk.lastFrame[1] = trk.xresampleBuf[(outFrames - 1) * channels + 1];
+                actualPushed = outFrames;
             }
         } else {
             updateFadeHistory(trk, floatBuf, frames, channels);
@@ -229,17 +234,18 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             trk.ringBuf->push(floatBuf, frames, channels);
             trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
+            actualPushed = frames;
         }
     }
     if (trk.pcmRingBuf) {
         trk.pcmRingBuf->push(floatBuf, frames, channels);
     }
 
-    trk.writtenFrames += frames;
+    trk.writtenFrames += actualPushed;
 
     // Push position to Dart
-    if (gCtl.sampleRate > 0) {
-        int64_t posMs = trk.writtenFrames.load() * 1000 / gCtl.sampleRate;
+    if (trk.sampleRate > 0) {
+        int64_t posMs = trk.writtenFrames.load() * 1000 / trk.sampleRate;
         pushPositionToDart(state->trackIndex, posMs, true, trk.lastCallbackMs, gCtl.dartPort);
     }
 

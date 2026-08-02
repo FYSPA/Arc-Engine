@@ -167,7 +167,25 @@ void predecodeFlac(TrackState &trk, const char *path) {
         if (!FLAC__stream_decoder_process_until_end_of_metadata(decoder)) {
             LOGE("  predecode FLAC: metadata failed — file may be corrupted: %s", path);
         } else {
-            while (ctx->totalFrames < MAX_PREDECODE_FRAMES) {
+            // After metadata, we know source sample rate. Calculate required input frames
+            // so that after SR resampling we have enough frames for the full crossfade.
+            int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
+            if (fadeLen > 0 && gCtl.sampleRate > 0 && ctx->sampleRate > 0
+                && ctx->sampleRate != gCtl.sampleRate) {
+                int32_t requiredInput = (int32_t)((int64_t)fadeLen * ctx->sampleRate / gCtl.sampleRate);
+                if (requiredInput > ctx->maxFrames) {
+                    // Reallocate larger buffer for SR mismatch crossfade
+                    float *newBuf = new float[requiredInput * 2];
+                    int32_t copied = ctx->totalFrames * 2;
+                    for (int32_t i = 0; i < copied; i++) newBuf[i] = ctx->buf[i];
+                    delete[] ctx->buf;
+                    ctx->buf = newBuf;
+                    ctx->maxFrames = requiredInput;
+                    LOGI("  predecode FLAC: SR mismatch — expanded buffer %d→%d input frames (%dHz→%dHz, fadeLen=%d)",
+                         MAX_PREDECODE_FRAMES, requiredInput, ctx->sampleRate, gCtl.sampleRate, fadeLen);
+                }
+            }
+            while (ctx->totalFrames < ctx->maxFrames) {
                 FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
                 if (ds == FLAC__STREAM_DECODER_END_OF_STREAM) break;
                 if (ds == FLAC__STREAM_DECODER_ABORTED) break;
@@ -314,7 +332,6 @@ EXPORT void track_pause(int32_t index) {
     if (index < 0 || index >= MAX_TRACKS) return;
     TrackState &trk = gCtl.tracks[index];
     trk.paused = true;
-    if (trk.ringBuf) trk.ringBuf->reset();
 }
 
 EXPORT void track_resume(int32_t index) {

@@ -138,6 +138,7 @@ inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch)
     }
     trk.crossfadeRemaining = rem;
     if (rem <= 0) {
+        LOGI("applyFadeIn: crossfade fade-in complete — crossfading 1→0");
         trk.crossfading = 0;
         trk.crossfadeRemaining = 0;
     }
