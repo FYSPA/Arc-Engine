@@ -142,7 +142,8 @@ private:
         double alpha = sinW / (2.0 * Q);
 
         double &b0 = b0_[index], &b1 = b1_[index], &b2 = b2_[index];
-        double &a0 = a0_[index], &a1 = a1_[index], &a2 = a2_[index];
+        double a0;
+        double &a1 = a1_[index], &a2 = a2_[index];
 
         switch (bands_[index].type) {
             case FilterType::PEAKING:
@@ -196,6 +197,6 @@ private:
     bool bypass_;
     EqBandConfig bands_[MAX_EQ_BANDS];
     double b0_[MAX_EQ_BANDS], b1_[MAX_EQ_BANDS], b2_[MAX_EQ_BANDS];
-    double a0_[MAX_EQ_BANDS], a1_[MAX_EQ_BANDS], a2_[MAX_EQ_BANDS];
+    double a1_[MAX_EQ_BANDS], a2_[MAX_EQ_BANDS];
     BiquadState states_[MAX_EQ_BANDS][2];
 };

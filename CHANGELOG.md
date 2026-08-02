@@ -1,3 +1,31 @@
+## 0.1.1 (Unreleased)
+
+### Bug Fixes
+- repeatCount=1 now stops instead of gapless-transitioning to next track
+- Loop activation race condition fixed — seeking to start before checking loop flag
+- WAV decode path restructured — gapless label moved after decoder init
+- FLAC EOS no longer kills thread in loop mode — checks repeatCount before exiting
+- UTF-8 metadata: accented characters (é, ñ, etc.) now display correctly
+- Atomic volume/pan eliminates data races in audio callback
+- Audio Local/Stream tracks now re-apply EQ chain on playback start
+
+### Refactoring
+- Extracted 8 helper functions from engine_threads.cpp (Tanda 1 + Tanda 2): `initTrackEq`, `findAudioTrack`, `processCodecOutput`, `createCodecFromExtractor`, `initFirstTrackStream`
+- Removed dead `DspProcessor` stub from export_mix.h
+
+### Features
+- Repeat count loop (Spotify-style): 0=off, -1=infinite, N=repeat N times
+- Per-track EQ system: each track has own `DspProcessor` with optional global override
+- Real limiter rewritten with envelope follower + look-ahead buffer
+- WAV export: `exportToWav()` and `convertFileToWav()` for multi-track mix and single file conversion
+
+### Performance
+- Pre-allocated `xmixBuf`/`xresampleBuf` in `TrackState` eliminate heap allocs in hot path
+- FLAC crossfade uses `ensureCapacity()` instead of per-call `std::vector` allocation
+- `applyFadeIn()` optimized — early return when no fade needed
+
+---
+
 ## 0.1.0
 
 ### Features

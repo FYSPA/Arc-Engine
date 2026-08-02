@@ -24,10 +24,10 @@
 | **12** | **Pruebas / Benchmarks** — 30 tests Dart, 22 tests C++, benchmarks RingBuffer y DSP |
 | **10.1** | **Guard contra archivos eliminados** — try-catch + existsSync() para evitar pantalla roja |
 | **P0.3** | **Mute / Solo por track** — Mute/solo nativos en audio callback con respeto de prioridad solo |
-| **P0.5** | **Loop por track** — Repetición infinita con re-seek automático al final de cada track |
+| **P0.5** | **Loop por track** — Loop infinito + repeatCount (0=infinite, N=repeat N times) estilo Spotify |
 | **P0.6** | **Audio Focus** — Ducking, pausa por notificación, becoming-noisy handler |
 | **P0.7** | **Bluetooth auto-pause** — Pausa por desconexión de auriculares BT con reconexión AAudio |
-| **P0.4** | **Limiter post-mezcla** — Hard-clipper con threshold configurable (-60 a 0 dB), aplicado después de effects chain |
+| **P0.4** | **Limiter post-mezcla** — Envelope follower + look-ahead + attack/release, aplicado después de effects chain |
 | **P0.1** | **EQ Q ajustable por banda** — Parámetro Q configurable por banda con filtros biquad |
 | **P0.2** | **EQ tipo de filtro por banda** — Peak/LowShelf/HighShelf/LowPass/HighPass por banda |
 | **P1.1** | **EQ** | Presets (10 built-in + custom save/load/delete) | `eq_dialog.dart` + `eq_preset.dart` |
@@ -36,10 +36,20 @@
 | **P2.4** | **Reverb** — 4 comb + 2 all-pass con pre-delay |
 | **V2.1** | **Sample Rate Conversion** — Resampleo sinc en tiempo real con tabla lookup (256 bins × 17 taps) |
 | **—** | **FLAC Metadata Export** — Title, artist, album, ISRC, trackNumber, year, bitrate, sampleRate, bitDepth via Vorbis Comments + CUESHEET |
+| **P2.3** | **Exportar mezcla a WAV** — Mezclar todas las pistas activas y guardar como archivo WAV (`exportToWav`) |
+| **P0.5** | **Loop por track (repeatCount)** — Loop infinito + repeatCount (0=infinite, N=repeat N times) estilo Spotify + fix de 5 bugs de loop |
+| **P0.4** | **Limiter con envelope follower** — Reescrito con envelope follower, look-ahead y attack/release configurables |
+| **P1.3** | **Fade-out en stop** — Fade-out suave al detener track (256 samples, 4 threads) |
+| **P2.1** | **EQ individual por track** — Cada pista con su propio DspProcessor + override opcional del global |
+| **—** | **Refactor engine_threads** — Extraídos 8 helpers: initTrackEq, findAudioTrack, processCodecOutput, createCodecFromExtractor, initFirstTrackStream |
+| **—** | **UTF-8 metadata fix** — utf8.decode() en lugar de String.fromCharCodes para caracteres acentuados (é, ñ, etc.) |
+| **—** | **Atomic volume/pan** — volume y pan como std::atomic<float> eliminan data races en audio callback |
+| **—** | **Crossfade heap alloc elimination** — Pre-allocated xmixBuf/xresampleBuf + ensureCapacity en FLAC handler |
+| **—** | **Dead code cleanup** — Eliminado stub DspProcessor de export_mix.h + removed unused exports |
 
 ### Configuración de publicación
 - **Paquete renombrado:** `audio_engine` → `arc_engine`
-- **Versión:** `0.1.0`
+- **Versión:** `0.1.1`
 - **Repositorio:** github.com/FYSPA/Arc-Engine (privado)
 - **Validación:** `dart format`, `flutter analyze`, `flutter test`, `dart pub publish --dry-run` — todo OK
 - **minSdk:** `27` (AAudio callback)
@@ -53,7 +63,6 @@
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
 | P1.2 | **EQ** | Curva de respuesta frecuencia vs ganancia | `eq_dialog.dart:631-773` (CustomPaint, 200 puntos) |
-| P1.3 | **Mixer** | Fade-out en stop (256 samples, 4 threads) | `engine_threads.cpp:77-86` |
 | P1.4 | **UI** | Drag & drop reorder | 🚫 Saltado — no se implementará |
 | P1.5 | **UI** | Waveform por track (ring buffer PCM) | `home_screen.dart` (WaveformWidget en cada track card) |
 
@@ -61,8 +70,6 @@
 
 | # | Área | Mejora | Descripción |
 |---|------|--------|-------------|
-| P2.1 | **DSP** | EQ individual por track | Cada pista con su propio `DspProcessor` (actualmente EQ es global: `gCtl.dsp`) |
-| P2.3 | **Pipeline** | Exportar mezcla a WAV | Mezclar todas las pistas activas y guardar como archivo WAV |
 | P2.4b | **DSP** | Delay / Echo | Efecto de delay standalone (el reverb usa líneas internas pero no hay delay independiente) |
 | P2.4c | **DSP** | Chorus | Efecto de chorus |
 | P2.5 | **DSP** | Sidechain | Compresión sidechain para ducking automático entre pistas |

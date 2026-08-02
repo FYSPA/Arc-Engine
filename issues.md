@@ -83,12 +83,13 @@ Generated from a full codebase review on 2026-07-21.
 - **Fix:** Add `_nameCtrl.close()` in `dispose()`.
 - **Status:** Fixed in commit `d6ff212` — added `_nameCtrl.close()` in `dispose()`.
 
-### 7. 250ms Polling for Position Reporting
+### 7. ~~250ms Polling for Position Reporting~~ [FIXED]
 
 - **File:** `lib/src/track_player.dart:260`
 - **Severity:** Medium
 - **Description:** `_startPolling()` uses `Timer.periodic(Duration(milliseconds: 250))` to poll native position/state. This introduces up to 250ms latency in UI position updates. The file header itself acknowledges this should use a native push callback (`Dart_PostCObject`).
 - **Fix:** Implement native-to-Dart push via `Dart_PostCObject` or `NativeCallable` for real-time position updates.
+- **Status:** Fixed — native push via `trackRegisterCallback` + `pushPositionToDart()` from all decoder threads. `_startPolling()` removed. Remaining 250ms timer is only for gapless version detection (intentional, not position).
 
 ### 8. ~~Debug `print()` Left in Production Code~~ [ACCEPTED]
 
@@ -189,12 +190,13 @@ Generated from a full codebase review on 2026-07-21.
 - **Description:** `EngineState gCtl` is a global mutable struct accessed by the audio callback, decoder threads, and Dart FFI threads simultaneously. While some fields are atomic, many are not (see issue #1). The global state pattern makes it difficult to test the native code in isolation or support multiple engine instances.
 - **Suggestion:** Encapsulate state in a class with explicit thread-safety annotations and access patterns.
 
-### 20. God Functions in Decoder Threads
+### 20. ~~God Functions in Decoder Threads~~ [PARTIALLY FIXED]
 
 - **File:** `android/src/main/cpp/engine_threads.cpp`
 - **Severity:** Long-term
 - **Description:** `flacPlaybackThread()` (~350 lines), `mediaPlaybackThread()` (~250 lines), and others are enormous functions with deeply nested conditionals. Each contains duplicated gapless-transition logic repeated ~3 times per thread type (~12 near-identical blocks total).
 - **Suggestion:** Extract gapless transition into a shared helper function. Break each thread into smaller composable functions (init, decode loop, gapless transition, cleanup).
+- **Status:** Partially fixed in commits `5e30fad` + `5298215` — 8 helpers extracted (Tanda 1 + Tanda 2): `initTrackEq`, `findAudioTrack`, `processCodecOutput`, `createCodecFromExtractor`, `initFirstTrackStream`. Gapless logic blocks reduced but not fully unified into a single helper.
 
 ### 21. Hardcoded 4-Track Limit
 
@@ -250,12 +252,28 @@ Generated from a full codebase review on 2026-07-21.
 - **Description:** Pattern: `strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1)`. While `TrackState::path` is zero-initialized (`char path[512]{0}`), after a gapless transition the previous path data may still be present. The code relies on the `sizeof(trk.path) - 1` limit but does not explicitly set `trk.path[511] = '\0'` after the copy.
 - **Fix:** Add `trk.path[sizeof(trk.path) - 1] = '\0';` after each `strncpy`, or use `snprintf` instead.
 
-### 28. `a0_` Array Declared But Not Used at Runtime
+### 28. ~~`a0_` Array Declared But Not Used at Runtime~~ [FIXED]
 
 - **File:** `android/src/main/cpp/dsp_processor.h:~137`
 - **Severity:** Low
 - **Description:** `double a0_[MAX_EQ_BANDS]` is computed in `recalcCoeffs()` but never read after the normalization step (`b0 /= a0`). Wastes 80 bytes of memory.
 - **Fix:** Remove the `a0_` array member.
+- **Status:** Fixed — replaced member `a0_[MAX_EQ_BANDS]` with local variable `double a0` in `recalcCoeffs()`. Saves 80 bytes per DspProcessor instance.
+
+### 29. No `onError` Stream — Decoder Errors Are Silent
+
+- **File:** `android/src/main/cpp/engine_threads.cpp` (all 4 decoder threads), `lib/src/track_player.dart`
+- **Severity:** Medium
+- **Description:** When a decoder encounters a mid-playback error (corrupt file, codec failure, storage device unmounted), the thread silently exits after a fade-out. The Dart side only sees `PlaybackState.stopped` via the native push callback — there is no error code, no error message, and no way to distinguish "track finished naturally" from "track died due to corruption."
+- **Impact:** Apps cannot show meaningful error UI ("File corrupted, skipping...") or implement retry logic.
+- **Fix:** Add an error field to the native push message (e.g., `[trackIndex, posMs, running, errorCode]`) and expose an `onError` stream on `TrackPlayer`.
+
+### 30. Error Handling Returns Raw C Codes — No Dart-Friendly Errors
+
+- **File:** `lib/src/track_player.dart` (`play()` returns `int`), `lib/src/audio_mixer.dart` (static methods)
+- **Severity:** Low
+- **Description:** All playback methods return `0 = success`, non-zero = failure with no further information. This is idiomatic in C but not in Dart. Callers cannot determine whether a failure was caused by a missing file, unsupported format, full track slot, or decoder error.
+- **Suggestion:** Add documented error codes (e.g., `-1` = invalid path, `-2` = unsupported format, `-3` = track slot busy) or throw typed exceptions.
 
 ---
 
@@ -285,7 +303,7 @@ Generated from a full codebase review on 2026-07-21.
 | P1 | #9 | Extract duplicated cleanup logic into `cleanupEngine()` | ✅ Fixed |
 | P1 | #10 | Deduplicate WAV parsing in `track_play()` | ✅ Fixed |
 | P1 | #12 | Replace VLAs with fixed-size buffers | ✅ Fixed |
-| P2 | #7 | Implement native push for position updates | Pending |
+| P2 | #7 | Implement native push for position updates | ✅ Fixed |
 | P2 | #8 | Replace debug `print()` with proper logger | ⚠️ Accepted |
 | P2 | #11 | Add sample rate mismatch detection/rejection | Pending |
 | P2 | #13 | Add backpressure to `PcmStream` | Pending |
