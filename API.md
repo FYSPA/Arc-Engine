@@ -13,7 +13,8 @@
 5. [Data Classes](#5-data-classes)
 6. [MediaSession / Notifications](#6-mediasession--notifications)
 7. [Constants & Ranges](#7-constants--ranges)
-8. [Architecture](#8-architecture)
+8. [Integration with Arx Canvas](#8-integration-with-arx-canvas)
+9. [Architecture](#9-architecture)
 
 ---
 
@@ -824,7 +825,330 @@ MediaSession.onCommand.listen((cmd) {
 
 ---
 
-## 8. Architecture
+## 8. Integration with Arx Canvas
+
+[Arc Canvas](https://github.com/FYSPA/arx-canvas) is a companion library that provides Spotify Canvas (animated backgrounds), synchronized lyrics, and album artwork with automatic fallback between multiple sources. Both libraries are designed to work together via `ArcTrackMetadata` as the bridge model.
+
+### Connection Flow
+
+```
+Arc Engine                          Arx Canvas
+─────────                          ──────────
+TrackPlayer.metadata ──────────▶ ArcTrackMetadata.fromFlacData()
+                                        │
+                          ┌─────────────┼─────────────┐
+                          ▼             ▼             ▼
+                   CanvasOrchestrator  LyricsService  ArtworkService
+                          │             │             │
+                          ▼             ▼             ▼
+                   Spotify Canvas   Synced Lyrics  Album Cover
+                   (animated bg)   (word-level)   (with fallback)
+```
+
+### Bridge: ArcTrackMetadata
+
+`ArcTrackMetadata` is a pure Dart model that maps 1:1 to `FlacMetadataData`:
+
+```dart
+import 'package:arx_canvas/arx_canvas.dart';
+
+final metadata = ArcTrackMetadata.fromFlacData(
+  title: player.title,
+  artist: player.artist,
+  album: player.album,
+  isrc: player.isrc,
+  duration: player.duration,
+  sampleRate: player.sampleRate,
+  bitDepth: player.bitDepth,
+  channels: player.channels,
+  bitrate: player.bitrate,
+  trackNumber: player.trackNumber,
+  year: player.year,
+);
+```
+
+**Field mapping:**
+
+| Arc Engine (`TrackPlayer`) | Arx Canvas (`ArcTrackMetadata`) |
+|---|---|
+| `title` | `title` |
+| `titleClean` | `titleClean` (getter) |
+| `artist` | `artist` |
+| `album` | `album` |
+| `isrc` | `isrc` |
+| `duration` | `duration` |
+| `sampleRate` | `sampleRate` |
+| `bitDepth` | `bitDepth` |
+| `channels` | `channels` |
+| `bitrate` | `bitrate` |
+| `trackNumber` | `trackNumber` |
+| `year` | `year` |
+| — | `spotifyTrackId` (resolved via resolver) |
+
+### Spotify Canvas (Animated Backgrounds)
+
+```dart
+final config = ArcCanvasConfig(
+  spotifyClientId: dotenv.env['SPOTIFY_CLIENT_ID'],
+  spotifySpDcCookie: dotenv.env['SPOTIFY_SP_DC_COOKIE'],
+);
+
+final orchestrator = CanvasOrchestrator(
+  webClientId: config.spotifyClientId,
+  webClientSecret: config.spotifyClientSecret,
+  deezerSearch: DeezerSearch(),
+  odesliService: OdesliService(),
+  musiclinkService: MusicLinkService(apiKey: config.musiclinkApiKey),
+);
+orchestrator.setSpDcCookie(config.spotifySpDcCookie!);
+
+// Single track
+final video = await orchestrator.resolveCanvas(metadata);
+if (video != null) {
+  // video.url → animated background URL
+}
+
+// Batch (with throttling + cancellation)
+final source = CancellationTokenSource();
+final results = await orchestrator.resolveMultiple(
+  [metadata1, metadata2, metadata3],
+  cancelToken: source.token,
+);
+```
+
+**Resolution chain** (no Spotify Premium required):
+
+1. **Deezer + Odesli** (free) — search Deezer by ISRC, map to Spotify URL
+2. **MusicLink** (free, 300 req/month) — ISRC → Spotify URL fallback
+3. **Spotify Web API** (last resort) — search by ISRC or title+artist
+
+### Synchronized Lyrics
+
+```dart
+final lyricsService = LyricsService();
+
+final lyrics = await lyricsService.getLyrics(
+  trackName: player.title,
+  artistName: player.artist,
+  duration: player.duration,
+);
+
+if (lyrics.syncedLyrics != null) {
+  for (final line in lyrics.syncedLyrics!) {
+    // line.text → lyric text
+    // line.timestamp → Duration when to highlight
+  }
+}
+```
+
+**Fallback chain** (12 sources, auto-fallback):
+
+1. Local `.lrc`/`.ttml` files
+2. Cache (previously downloaded)
+3. BetterLyrics (word-level TTML, free)
+4. YouLyPlus (syllable, 5 mirrors, free)
+5. LRCLIB (line-level, free)
+6. KuGou / Megalobiz (LRC, free)
+7. Unison / Paxsenix (plain text, free)
+8. Musixmatch (synced, requires API key)
+9. Genius (plain text, optional token)
+10. SpotifyLyrics (synced, requires session)
+
+### Album Artwork
+
+```dart
+final artworkService = ArtworkService(
+  spotifyClientId: config.spotifyClientId,
+);
+
+final artwork = await artworkService.getArtwork(
+  trackName: player.title,
+  artistName: player.artist,
+  albumName: player.album,
+);
+
+if (artwork != null) {
+  // artwork.imageUrl → album cover URL
+}
+```
+
+**Fallback chain:** iTunes → Deezer → Spotify Web
+
+### Complete Integration Example
+
+```dart
+import 'package:arc_engine/arc_engine.dart';
+import 'package:arx_canvas/arx_canvas.dart';
+
+class MusicSession {
+  final CanvasOrchestrator _orchestrator;
+  final LyricsService _lyricsService;
+  final ArtworkService _artworkService;
+  int _resolveGeneration = 0;
+
+  MusicSession(ArcCanvasConfig config)
+      : _orchestrator = CanvasOrchestrator(
+          webClientId: config.spotifyClientId,
+          webClientSecret: config.spotifyClientSecret,
+          deezerSearch: DeezerSearch(),
+          odesliService: OdesliService(),
+        ),
+        _lyricsService = LyricsService(),
+        _artworkService = ArtworkService(
+          spotifyClientId: config.spotifyClientId,
+        ) {
+    if (config.spotifySpDcCookie != null) {
+      _orchestrator.setSpDcCookie(config.spotifySpDcCookie!);
+    }
+  }
+
+  /// Bridge Arc Engine metadata to Arx Canvas.
+  /// Metadata is available immediately after play() returns — no delay needed.
+  ArcTrackMetadata _bridgeMetadata(TrackPlayer player) {
+    return ArcTrackMetadata.fromFlacData(
+      title: player.title,
+      artist: player.artist,
+      album: player.album,
+      isrc: player.isrc,
+      duration: player.duration,
+      sampleRate: player.sampleRate,
+      bitDepth: player.bitDepth,
+      channels: player.channels,
+      bitrate: player.bitrate,
+      trackNumber: player.trackNumber,
+      year: player.year,
+    );
+  }
+
+  /// Resolve everything for a track with race-condition protection.
+  /// Uses a generation counter to discard obsolete results when the user
+  /// skips to another track before resolution completes.
+  Future<TrackExtras?> resolve(TrackPlayer player) async {
+    final metadata = _bridgeMetadata(player);
+    final myGeneration = ++_resolveGeneration;
+
+    final results = await Future.wait([
+      _orchestrator.resolveCanvas(metadata),
+      _lyricsService.getLyrics(
+        trackName: player.title,
+        artistName: player.artist,
+        duration: player.duration,
+      ),
+      _artworkService.getArtwork(
+        trackName: player.title,
+        artistName: player.artist,
+        albumName: player.album,
+      ),
+    ]);
+
+    // Discard if user skipped to another track during resolution
+    if (myGeneration != _resolveGeneration) return null;
+
+    return TrackExtras(
+      canvas: results[0] as VideoInfo?,
+      lyrics: results[1] as LyricsResult,
+      artwork: results[2] as ArtworkResult?,
+    );
+  }
+
+  /// Prefetch content for a track before it starts playing.
+  /// Call this when you know what track comes next (from a playlist/catalog).
+  Future<TrackExtras?> prefetch(ArcTrackMetadata metadata) async {
+    final results = await Future.wait([
+      _orchestrator.resolveCanvas(metadata),
+      _lyricsService.getLyrics(
+        trackName: metadata.title,
+        artistName: metadata.artist,
+        duration: metadata.duration,
+      ),
+      _artworkService.getArtwork(
+        trackName: metadata.title,
+        artistName: metadata.artist,
+        albumName: metadata.album,
+      ),
+    ]);
+
+    return TrackExtras(
+      canvas: results[0] as VideoInfo?,
+      lyrics: results[1] as LyricsResult,
+      artwork: results[2] as ArtworkResult?,
+    );
+  }
+
+  void dispose() {
+    _orchestrator.dispose();
+    _lyricsService.client?.dispose();
+  }
+}
+
+class TrackExtras {
+  final VideoInfo? canvas;
+  final LyricsResult lyrics;
+  final ArtworkResult? artwork;
+  const TrackExtras({this.canvas, required this.lyrics, this.artwork});
+}
+```
+
+### Usage: Basic Play
+
+```dart
+final session = MusicSession(config);
+final player = AudioEngine.instance.tracks[0];
+
+player.play('/path/to/song.flac');
+
+// Metadata is available immediately — play() loads it synchronously before playback starts
+final extras = await session.resolve(player);
+if (extras != null) {
+  showCanvas(extras.canvas);
+  showLyrics(extras.lyrics);
+  showArtwork(extras.artwork);
+}
+```
+
+### Usage: Gapless with Prefetch
+
+```dart
+final session = MusicSession(config);
+final player = AudioEngine.instance.tracks[0];
+
+// 1. Play first track
+player.play('/path/to/song1.flac');
+final extras1 = await session.resolve(player);
+showTrackUI(extras1);
+
+// 2. Queue next track
+player.setNextTrack('/path/to/song2.flac', name: 'Song 2');
+
+// 3. Prefetch content for next track while current is still playing
+//    (requires pre-read metadata from catalog, not from TrackPlayer)
+final nextMetadata = ArcTrackMetadata(
+  title: 'Song 2', artist: 'Artist', album: 'Album',
+  duration: Duration(minutes: 3),
+);
+final prefetchFuture = session.prefetch(nextMetadata);
+
+// 4. When gapless transition fires, content is already resolved
+player.onNameChanged.listen((name) async {
+  final extras = await prefetchFuture; // likely already resolved
+  if (extras != null) showTrackUI(extras);
+});
+```
+
+### Limitations
+
+| # | Limitation | Impact | Workaround |
+|---|---|---|---|
+| 1 | Only FLAC extracts full metadata (title, artist, ISRC) | Canvas resolution degrades — falls back to title+artist search (less precise). Lyrics and artwork work fine with any format. | Pre-load metadata from file catalog or ID3 tags |
+| 2 | No `onMetadataLoaded` stream for gapless transitions | During gapless, metadata is detected by 250ms polling — there's a brief window where the track changed but metadata isn't available yet | Poll `player.metadata` after `onNameChanged` or wait for future `onMetadataLoaded` stream (planned) |
+| 3 | Error handling asymmetry | Arc Engine returns `int` codes; Arx Canvas throws typed exceptions | Wrap Arc Engine calls in try-catch and map codes to exceptions |
+| 4 | Prefetch requires pre-read metadata | `setNextTrack()` only receives a file path, not metadata — to prefetch content you need the track's metadata from a catalog | Maintain a metadata index alongside your playlist |
+
+> **Note on format support:** Lyrics (`LyricsService`) and artwork (`ArtworkService`) only need `trackName` + `artistName`, which are available for **all formats** (extracted from filename if no tags). Only Canvas resolution benefits from ISRC (FLAC-only via Vorbis Comments), making it the only service degraded by non-FLAC formats.
+
+---
+
+## 9. Architecture
 
 ### Data Flow
 

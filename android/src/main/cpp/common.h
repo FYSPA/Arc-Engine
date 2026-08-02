@@ -196,3 +196,30 @@ inline void pushPositionToDart(int32_t trackIndex, int64_t posMs, bool running,
 
     Dart_PostCObject_DL((Dart_Port_DL)dartPort, &msg);
 }
+
+// ─── Dart error push callback ──────────────────────────────────────────────
+// Sends decoder errors from native threads to Dart via Dart_NativePort.
+// Not rate-limited (fires once per error, not on every audio frame).
+// Message format: ['error': String, trackIndex: int, errorMessage: String]
+
+inline void pushErrorToDart(int32_t trackIndex, const char* errorMessage,
+                            int64_t dartPort) {
+    if (dartPort <= 0 || !errorMessage || !errorMessage[0]) return;
+
+    Dart_CObject msg;
+    msg.type = Dart_CObject_kArray;
+    msg.value.as_array.length = 3;
+
+    Dart_CObject e0, e1, e2;
+    e0.type = Dart_CObject_kString;
+    e0.value.as_string = (char*)"error";
+    e1.type = Dart_CObject_kInt32;
+    e1.value.as_int32 = trackIndex;
+    e2.type = Dart_CObject_kString;
+    e2.value.as_string = (char*)errorMessage;
+
+    Dart_CObject* elements[3] = {&e0, &e1, &e2};
+    msg.value.as_array.values = elements;
+
+    Dart_PostCObject_DL((Dart_Port_DL)dartPort, &msg);
+}

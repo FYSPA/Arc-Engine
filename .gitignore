@@ -41,6 +41,7 @@ Thumbs.db
 *.key
 keystore.jks
 local.properties
+API_Arx_Canvas.md
 
 # ─── Gradle (Android) ────────────────────────────────────────
 .gradle/

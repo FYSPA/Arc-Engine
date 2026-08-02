@@ -62,10 +62,27 @@ class TrackPlayer {
       StreamController<String>.broadcast();
   final StreamController<String> _abortCtrl =
       StreamController<String>.broadcast();
+  final StreamController<FlacMetadataData?> _metadataCtrl =
+      StreamController<FlacMetadataData?>.broadcast();
+  final StreamController<String> _errorCtrl =
+      StreamController<String>.broadcast();
 
   Stream<PlaybackState> get onStateChanged => _stateCtrl.stream;
   Stream<Duration> get onPositionChanged => _posCtrl.stream;
   Stream<String> get onNameChanged => _nameCtrl.stream;
+
+  /// Emits when metadata is loaded for a track.
+  ///
+  /// For direct [play] calls, metadata is available immediately and the stream
+  /// emits synchronously. For gapless transitions, it emits when the transition
+  /// is detected (within ~250ms). Emits `null` for non-FLAC formats.
+  Stream<FlacMetadataData?> get onMetadataLoaded => _metadataCtrl.stream;
+
+  /// Emits when a decoder or codec error occurs on this track.
+  ///
+  /// The [String] value describes the error (e.g. "FLAC decode error", "codec error").
+  /// After an error, the track transitions to [PlaybackState.stopped].
+  Stream<String> get onError => _errorCtrl.stream;
 
   /// Emits the name of the next track that failed to transition via gapless.
   ///
@@ -264,6 +281,7 @@ class TrackPlayer {
   void _loadMetadata(String path) {
     if (!path.toLowerCase().endsWith('.flac')) {
       _metadata = null;
+      _metadataCtrl.add(null);
       return;
     }
     final pathPtr = path.toNativeUtf8();
@@ -272,6 +290,7 @@ class TrackPlayer {
       final result = _ffi.getFlacMetadata(pathPtr, metaPtr);
       if (result != 0) {
         _metadata = null;
+        _metadataCtrl.add(null);
         return;
       }
       final m = metaPtr.ref;
@@ -294,6 +313,7 @@ class TrackPlayer {
         year: m.year != 0 ? m.year : null,
         duration: Duration(milliseconds: m.durationMs),
       );
+      _metadataCtrl.add(_metadata);
     } finally {
       calloc.free(pathPtr);
       calloc.free(metaPtr);
@@ -395,6 +415,8 @@ class TrackPlayer {
     _posCtrl.close();
     _nameCtrl.close();
     _abortCtrl.close();
+    _metadataCtrl.close();
+    _errorCtrl.close();
   }
 
   // ─── Static ReceivePort for native push callbacks ──────────────────
@@ -416,7 +438,19 @@ class TrackPlayer {
   }
 
   static void _onNativeMessage(dynamic message) {
-    if (message is! List || message.length != 3) return;
+    if (message is! List) return;
+
+    // Error messages: ['error', trackIndex, errorMessage]
+    if (message.length == 3 && message[0] is String && message[0] == 'error') {
+      final int trackIndex = message[1] as int;
+      final String errorMessage = message[2] as String;
+      final player = _instances[trackIndex];
+      player?._errorCtrl.add(errorMessage);
+      return;
+    }
+
+    // Position updates: [trackIndex, posMs, running]
+    if (message.length != 3) return;
     final int trackIndex = message[0] as int;
     final int posMs = message[1] as int;
     final bool running = message[2] as bool;

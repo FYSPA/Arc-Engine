@@ -45,6 +45,7 @@ static inline void abortGapless(TrackState &trk, bool abort = false) {
 static inline void resetAfterGapless(TrackState &trk, int32_t sr, int32_t ch,
                                      int64_t totalFrames) {
     strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1);
+    trk.path[sizeof(trk.path) - 1] = '\0';
     trk.gapLessVersion++;
     trk.hasNext = 0;
     trk.sampleRate = sr;
@@ -640,7 +641,12 @@ void flacPlaybackThread(int ti) {
             continue;
         }
 
-        if (!FLAC__stream_decoder_process_single(decoder)) break;
+        if (!FLAC__stream_decoder_process_single(decoder)) {
+            FLAC__StreamDecoderState errSt = FLAC__stream_decoder_get_state(decoder);
+            LOGE("FLAC thread[%d]: decode error state=%d path=%s", ti, errSt, trk.path);
+            pushErrorToDart(ti, "FLAC decode error", gCtl.dartPort);
+            break;
+        }
         if (FLAC__stream_decoder_get_state(decoder) == FLAC__STREAM_DECODER_END_OF_STREAM) {
             LOGI("FLAC thread[%d]: EOS wf=%lld total=%lld hasNext=%d loop=%d",
                  ti, (long long)trk.writtenFrames.load(), (long long)ps.info.totalSamples,
@@ -878,6 +884,8 @@ void mediaPlaybackThread(int ti) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else {
+            LOGE("Media thread[%d]: codec error %zd", ti, outIdx);
+            pushErrorToDart(ti, "codec error", gCtl.dartPort);
             break;
         }
     }
@@ -1084,6 +1092,8 @@ void mediaStreamPlaybackThread(int ti) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         } else {
+            LOGE("Media stream[%d]: codec error %zd", ti, outIdx);
+            pushErrorToDart(ti, "codec error", gCtl.dartPort);
             break;
         }
     }

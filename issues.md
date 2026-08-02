@@ -245,12 +245,13 @@ Generated from a full codebase review on 2026-07-21.
 - **Description:** `FfiInterface._instanceForTest` is a static nullable field with no synchronization. Setting it from one test while another reads it could cause issues in parallel test execution.
 - **Suggestion:** Use a zone-based approach or `Isolate`-local storage for test isolation.
 
-### 27. `strncpy` Without Explicit Null-Termination
+### 27. ~~`strncpy` Without Explicit Null-Termination~~ [FIXED]
 
 - **File:** `android/src/main/cpp/engine_threads.cpp` (8 occurrences)
 - **Severity:** Low
 - **Description:** Pattern: `strncpy(trk.path, trk.nextPath, sizeof(trk.path) - 1)`. While `TrackState::path` is zero-initialized (`char path[512]{0}`), after a gapless transition the previous path data may still be present. The code relies on the `sizeof(trk.path) - 1` limit but does not explicitly set `trk.path[511] = '\0'` after the copy.
 - **Fix:** Add `trk.path[sizeof(trk.path) - 1] = '\0';` after each `strncpy`, or use `snprintf` instead.
+- **Status:** Fixed — added explicit null-termination after strncpy in `resetAfterGapless()`.
 
 ### 28. ~~`a0_` Array Declared But Not Used at Runtime~~ [FIXED]
 
@@ -260,13 +261,14 @@ Generated from a full codebase review on 2026-07-21.
 - **Fix:** Remove the `a0_` array member.
 - **Status:** Fixed — replaced member `a0_[MAX_EQ_BANDS]` with local variable `double a0` in `recalcCoeffs()`. Saves 80 bytes per DspProcessor instance.
 
-### 29. No `onError` Stream — Decoder Errors Are Silent
+### 29. ~~No `onError` Stream — Decoder Errors Are Silent~~ [FIXED]
 
 - **File:** `android/src/main/cpp/engine_threads.cpp` (all 4 decoder threads), `lib/src/track_player.dart`
 - **Severity:** Medium
 - **Description:** When a decoder encounters a mid-playback error (corrupt file, codec failure, storage device unmounted), the thread silently exits after a fade-out. The Dart side only sees `PlaybackState.stopped` via the native push callback — there is no error code, no error message, and no way to distinguish "track finished naturally" from "track died due to corruption."
 - **Impact:** Apps cannot show meaningful error UI ("File corrupted, skipping...") or implement retry logic.
-- **Fix:** Add an error field to the native push message (e.g., `[trackIndex, posMs, running, errorCode]`) and expose an `onError` stream on `TrackPlayer`.
+- **Fix:** Added `pushErrorToDart()` in C++ that sends `['error', trackIndex, errorMessage]` via Dart_NativePort. Added `onError` stream on `TrackPlayer` and dispatch in `_onNativeMessage`.
+- **Status:** Fixed — FLAC decode errors, media codec errors, and media stream codec errors all push to Dart. Dart side exposes `Stream<String> get onError`.
 
 ### 30. Error Handling Returns Raw C Codes — No Dart-Friendly Errors
 
@@ -274,6 +276,15 @@ Generated from a full codebase review on 2026-07-21.
 - **Severity:** Low
 - **Description:** All playback methods return `0 = success`, non-zero = failure with no further information. This is idiomatic in C but not in Dart. Callers cannot determine whether a failure was caused by a missing file, unsupported format, full track slot, or decoder error.
 - **Suggestion:** Add documented error codes (e.g., `-1` = invalid path, `-2` = unsupported format, `-3` = track slot busy) or throw typed exceptions.
+
+### 31. ~~No `onMetadataLoaded` Stream for Gapless Transitions~~ [FIXED]
+
+- **File:** `lib/src/track_player.dart`
+- **Severity:** Medium
+- **Description:** For direct `play()` calls, metadata is loaded synchronously before playback starts — available immediately. But during gapless transitions, metadata is detected via a 250ms polling timer (`_startGaplessPolling`). There is a window of up to 250ms where the track has changed but `player.metadata` still reflects the previous track. This makes it impossible to react instantly to metadata changes (e.g., updating UI, prefetching Canvas/lyrics).
+- **Impact:** Gapless-aware apps must poll or use arbitrary delays to know when metadata is ready after a transition.
+- **Fix:** Added `Stream<FlacMetadataData?> get onMetadataLoaded` on `TrackPlayer`. Emits in `_loadMetadata()` which is called at both `play()` and gapless timer entry points.
+- **Status:** Fixed — stream emits immediately for direct play and within 250ms for gapless transitions. Emits `null` for non-FLAC formats.
 
 ---
 
@@ -308,5 +319,9 @@ Generated from a full codebase review on 2026-07-21.
 | P2 | #11 | Add sample rate mismatch detection/rejection | Pending |
 | P2 | #13 | Add backpressure to `PcmStream` | Pending |
 | P2 | #18 | Provide x86/x86_64 precompiled libs or document limitation | Pending |
+| P2 | #29 | Add `onError` stream for decoder errors | ✅ Fixed |
+| P2 | #31 | Add `onMetadataLoaded` stream for gapless transitions | ✅ Fixed |
 | P3 | #14-17 | Clean up gitignore / remove committed artifacts | Pending |
-| P3 | #19-28 | Long-term architectural improvements | Pending |
+| P3 | #19-26 | Long-term architectural improvements | Pending |
+| P3 | #27 | strncpy null-termination in gapless path | ✅ Fixed |
+| P3 | #30 | Dart-friendly error codes instead of raw C int | Pending |

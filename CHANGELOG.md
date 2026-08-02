@@ -8,16 +8,16 @@
 - UTF-8 metadata: accented characters (é, ñ, etc.) now display correctly
 - Atomic volume/pan eliminates data races in audio callback
 - Audio Local/Stream tracks now re-apply EQ chain on playback start
-
-### Refactoring
-- Extracted 8 helper functions from engine_threads.cpp (Tanda 1 + Tanda 2): `initTrackEq`, `findAudioTrack`, `processCodecOutput`, `createCodecFromExtractor`, `initFirstTrackStream`
-- Removed dead `DspProcessor` stub from export_mix.h
+- Decoder errors now propagated to Dart via `onError` stream (#29)
+- strncpy null-termination fix in gapless path (#27)
 
 ### Features
 - Repeat count loop (Spotify-style): 0=off, -1=infinite, N=repeat N times
 - Per-track EQ system: each track has own `DspProcessor` with optional global override
 - Real limiter rewritten with envelope follower + look-ahead buffer
 - WAV export: `exportToWav()` and `convertFileToWav()` for multi-track mix and single file conversion
+- `onMetadataLoaded` stream on `TrackPlayer` for gapless transitions (#31)
+- `onError` stream on `TrackPlayer` for decoder/codec errors (#29)
 
 ### Performance
 - Pre-allocated `xmixBuf`/`xresampleBuf` in `TrackState` eliminate heap allocs in hot path
