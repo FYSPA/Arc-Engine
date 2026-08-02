@@ -217,7 +217,16 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 }
                 updateFadeHistory(trk, trk.xresampleBuf, outFrames, channels);
                 applyFadeIn(trk, trk.xresampleBuf, outFrames, channels);
-                trk.ringBuf->push(trk.xresampleBuf, outFrames, channels);
+                {
+                    int32_t pushed = 0;
+                    while (pushed < outFrames) {
+                        int32_t n = trk.ringBuf->push(trk.xresampleBuf + pushed * channels,
+                                                       outFrames - pushed, channels);
+                        pushed += n;
+                        if (pushed < outFrames)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
+                }
                 trk.lastFrame[0] = trk.xresampleBuf[(outFrames - 1) * channels];
                 if (channels > 1) trk.lastFrame[1] = trk.xresampleBuf[(outFrames - 1) * channels + 1];
                 actualPushed = outFrames;
@@ -231,7 +240,16 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 for (int32_t i = 0; i < frames * channels; i++)
                     floatBuf[i] *= cv;
             }
-            trk.ringBuf->push(floatBuf, frames, channels);
+            {
+                int32_t pushed = 0;
+                while (pushed < frames) {
+                    int32_t n = trk.ringBuf->push(floatBuf + pushed * channels,
+                                                   frames - pushed, channels);
+                    pushed += n;
+                    if (pushed < frames)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
             trk.lastFrame[0] = floatBuf[(frames - 1) * channels];
             if (channels > 1) trk.lastFrame[1] = floatBuf[(frames - 1) * channels + 1];
             actualPushed = frames;

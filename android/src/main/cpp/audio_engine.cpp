@@ -56,6 +56,7 @@ aaudio_data_callback_result_t aaudioDataCallback(
     for (int t = 0; t < MAX_TRACKS; t++) {
         TrackState &trk = gCtl.tracks[t];
         if (!trk.running || !trk.ringBuf) continue;
+        if (trk.paused) continue;
         if (trk.mute) continue;
         if (anySolo && !trk.solo) continue;
 

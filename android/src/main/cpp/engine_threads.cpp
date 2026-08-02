@@ -185,10 +185,17 @@ static void fadeOutAndDrain(TrackState &trk, int32_t ch) {
         }
         trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
     }
+    // Wait for AAudio to drain the ring buffer — up to 5s safety limit
     if (trk.ringBuf) {
-        int to = 100;
-        while (trk.ringBuf->available(ch) > 0 && to-- > 0)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        int32_t maxWaitMs = 5000;
+        while (trk.ringBuf->available(ch) > 0 && maxWaitMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            maxWaitMs -= 10;
+        }
+        if (maxWaitMs <= 0) {
+            LOGW("FLAC thread: drain timeout — %d frames remaining",
+                 trk.ringBuf->available(ch));
+        }
     }
 }
 
