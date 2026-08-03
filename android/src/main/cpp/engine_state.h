@@ -100,6 +100,14 @@ struct TrackState {
     int32_t xmixBufCapacity{0};
     float *xresampleBuf{nullptr};
     int32_t xresampleBufCapacity{0};
+
+    // Pause/Resume/Stop fade ramp (smooth volume transitions)
+    // 0=none, 1=fade-out (pause/stop), 2=fade-in (resume)
+    std::atomic<int> fadeState{0};
+    std::atomic<int> fadeRemaining{0};  // frames left in fade
+    int32_t fadeDuration{0};            // total fade frames (converted from ms at pause/resume time)
+    std::atomic<int32_t> fadeDurationMs{0};  // fade duration in milliseconds (stored before play)
+    float fadeGain{1.0f};               // current gain multiplier (0.0→1.0 or 1.0→0.0)
 };
 
 // ─── Crossfade helpers (inline, after TrackState is complete) ─────────────────

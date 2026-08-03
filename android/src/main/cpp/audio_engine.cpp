@@ -69,18 +69,69 @@ aaudio_data_callback_result_t aaudioDataCallback(
         // Apply volume + constant-power pan
         float vol = trk.volume;
         float pan = trk.pan;
-        if (ch == 2) {
-            float angle = (pan + 1.0f) * 0.785398163f; // (pan+1)*pi/4
-            float cosP = cosf(angle);
-            float sinP = sinf(angle);
-            for (int32_t f = 0; f < frames; f++) {
-                int i = f * 2;
-                out[i]     += temp[i]   * cosP * vol;
-                out[i + 1] += temp[i+1] * sinP * vol;
+
+        // Pause/Resume fade ramp — interpolate gain per frame
+        int fadeState = trk.fadeState.load(std::memory_order_relaxed);
+        if (fadeState != 0) {
+            int32_t remaining = trk.fadeRemaining.load(std::memory_order_relaxed);
+            int32_t fadeFrames = frames < remaining ? frames : remaining;
+            float startGain = trk.fadeGain;
+            float endGain = (fadeState == 1) ? 0.0f : 1.0f;
+
+            if (ch == 2) {
+                float angle = (pan + 1.0f) * 0.785398163f;
+                float cosP = cosf(angle);
+                float sinP = sinf(angle);
+                for (int32_t f = 0; f < frames; f++) {
+                    int i = f * 2;
+                    float gain;
+                    if (f < fadeFrames) {
+                        float t = (float)f / (float)remaining;
+                        float t2 = t * t;
+                        gain = startGain + (endGain - startGain) * (3.0f * t2 - 2.0f * t2 * t);
+                    } else {
+                        gain = endGain;
+                    }
+                    float g = vol * gain;
+                    out[i]     += temp[i]   * cosP * g;
+                    out[i + 1] += temp[i+1] * sinP * g;
+                }
+            } else {
+                for (int32_t f = 0; f < frames; f++) {
+                    float gain;
+                    if (f < fadeFrames) {
+                        float t = (float)f / (float)remaining;
+                        float t2 = t * t;
+                        gain = startGain + (endGain - startGain) * (3.0f * t2 - 2.0f * t2 * t);
+                    } else {
+                        gain = endGain;
+                    }
+                    out[f] += temp[f] * vol * gain;
+                }
+            }
+
+            trk.fadeRemaining -= fadeFrames;
+            if (trk.fadeRemaining.load() <= 0) {
+                if (fadeState == 1) trk.paused = true;
+                trk.fadeState = 0;
+                trk.fadeGain = endGain;
+            } else {
+                trk.fadeGain = endGain;
             }
         } else {
-            for (int32_t i = 0; i < frames * ch; i++) {
-                out[i] += temp[i] * vol;
+            if (ch == 2) {
+                float angle = (pan + 1.0f) * 0.785398163f;
+                float cosP = cosf(angle);
+                float sinP = sinf(angle);
+                for (int32_t f = 0; f < frames; f++) {
+                    int i = f * 2;
+                    out[i]     += temp[i]   * cosP * vol;
+                    out[i + 1] += temp[i+1] * sinP * vol;
+                }
+            } else {
+                for (int32_t i = 0; i < frames * ch; i++) {
+                    out[i] += temp[i] * vol;
+                }
             }
         }
     }
@@ -332,12 +383,36 @@ EXPORT void track_stop(int32_t index) {
 EXPORT void track_pause(int32_t index) {
     if (index < 0 || index >= MAX_TRACKS) return;
     TrackState &trk = gCtl.tracks[index];
-    trk.paused = true;
+    int32_t ms = trk.fadeDurationMs.load();
+    if (ms > 0 && trk.sampleRate > 0 && !trk.paused.load() && trk.running.load()) {
+        int32_t dur = (int32_t)((int64_t)ms * trk.sampleRate / 1000);
+        trk.fadeDuration = dur;
+        trk.fadeGain = 1.0f;
+        trk.fadeRemaining = dur;
+        trk.fadeState = 1;  // fading out
+        LOGI("track_pause[%d]: fade-out %dms (%d frames)", index, ms, dur);
+    } else {
+        LOGI("track_pause[%d]: instant (ms=%d sr=%d running=%d)", index, ms, trk.sampleRate, trk.running.load());
+        trk.paused = true;
+    }
 }
 
 EXPORT void track_resume(int32_t index) {
-    if (index >= 0 && index < MAX_TRACKS)
-        gCtl.tracks[index].paused = false;
+    if (index < 0 || index >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[index];
+    int32_t ms = trk.fadeDurationMs.load();
+    if (ms > 0 && trk.sampleRate > 0 && trk.running.load()) {
+        int32_t dur = (int32_t)((int64_t)ms * trk.sampleRate / 1000);
+        trk.fadeDuration = dur;
+        trk.paused = false;
+        trk.fadeGain = 0.0f;
+        trk.fadeRemaining = dur;
+        trk.fadeState = 2;  // fading in
+        LOGI("track_resume[%d]: fade-in %dms (%d frames)", index, ms, dur);
+    } else {
+        LOGI("track_resume[%d]: instant (ms=%d sr=%d)", index, ms, trk.sampleRate);
+        trk.paused = false;
+    }
 }
 
 EXPORT int32_t track_seek(int32_t index, int32_t positionMs) {
@@ -409,6 +484,18 @@ EXPORT void track_set_solo(int32_t index, int32_t solo) {
 EXPORT void track_set_loop(int32_t index, int32_t loop) {
     if (index >= 0 && index < MAX_TRACKS)
         gCtl.tracks[index].repeatCount = loop;
+}
+
+EXPORT void track_set_fade_ms(int32_t index, int32_t ms) {
+    if (index < 0 || index >= MAX_TRACKS) return;
+    TrackState &trk = gCtl.tracks[index];
+    trk.fadeDurationMs = ms > 0 ? ms : 0;
+    LOGI("track_set_fade_ms[%d]: ms=%d sr=%d", index, ms, trk.sampleRate);
+}
+
+EXPORT int32_t track_get_fade_ms(int32_t index) {
+    if (index < 0 || index >= MAX_TRACKS) return 0;
+    return gCtl.tracks[index].fadeDurationMs.load();
 }
 
 EXPORT void track_set_next(int32_t index, const char *path) {

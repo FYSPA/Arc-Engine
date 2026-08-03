@@ -45,6 +45,7 @@ class TrackPlayer {
   double _pan = 0.0;
   bool _mute = false;
   bool _solo = false;
+  int _fadeDurationMs = 0;
   int _repeatCount = 0; // 0=off, -1=infinite, N>0=repeat N times
   String _currentName = '';
   String _nextName = '';
@@ -219,6 +220,16 @@ class TrackPlayer {
   set solo(bool v) {
     _solo = v;
     _ffi.trackSetSolo(index, v ? 1 : 0);
+  }
+
+  /// Pause/Resume fade duration in milliseconds. 0 = disabled (instant pause/resume).
+  ///
+  /// When enabled, pause fades out from current volume to 0, and resume fades
+  /// in from 0 to current volume over this duration using a smoothstep curve.
+  int get fadeDurationMs => _fadeDurationMs;
+  set fadeDurationMs(int ms) {
+    _fadeDurationMs = ms < 0 ? 0 : ms;
+    _ffi.trackSetFadeMs(index, _fadeDurationMs);
   }
 
   /// Sets the next track to play automatically when this track finishes.

@@ -73,6 +73,11 @@ void stopTrack(int index) {
     trk.mute = 0;
     trk.solo = 0;
     trk.repeatCount = 0;
+    trk.fadeState = 0;
+    trk.fadeRemaining = 0;
+    trk.fadeDuration = 0;
+    trk.fadeDurationMs = 0;
+    trk.fadeGain = 1.0f;
     trk.hasNext = 0;
     trk.nextPath[0] = '\0';
     trk.crossfading = 0;

@@ -124,6 +124,8 @@ abstract class FfiInterface {
   void trackSetMute(int index, int mute);
   void trackSetSolo(int index, int solo);
   void trackSetLoop(int index, int loop);
+  void trackSetFadeMs(int index, int ms);
+  int trackGetFadeMs(int index);
   void trackSetNext(int index, Pointer<Utf8> path);
   void trackClearNext(int index);
   void mixerSetMasterVolume(double vol);
@@ -383,6 +385,18 @@ final class FfiBindings implements FfiInterface {
   late final _trackSetLoop =
       _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
           'track_set_loop');
+
+  @override
+  void trackSetFadeMs(int index, int ms) => _trackSetFadeMs(index, ms);
+  late final _trackSetFadeMs =
+      _lib.lookupFunction<Void Function(Int32, Int32), void Function(int, int)>(
+          'track_set_fade_ms');
+
+  @override
+  int trackGetFadeMs(int index) => _trackGetFadeMs(index);
+  late final _trackGetFadeMs =
+      _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'track_get_fade_ms');
 
   @override
   void mixerSetMasterVolume(double vol) => _mixerSetMasterVolume(vol);

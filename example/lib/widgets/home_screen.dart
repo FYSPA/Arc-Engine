@@ -44,6 +44,8 @@ class _TrackUiState {
   bool mute = false;
   bool solo = false;
   int repeatCount = 0;
+  bool fadeEnabled = false;
+  int fadeDurationMs = 300;
   List<double> waveformSamples = [];
   List<double> waveformPeaks = [];
   bool waveformLoading = false;
@@ -295,6 +297,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final idx = trackIndex ?? 0;
     final player = AudioEngine.instance.tracks[idx];
     player.stop();
+    // Sync fade duration before playing
+    final existing = _tracks.indexWhere((t) => t.index == idx);
+    if (existing >= 0) {
+      player.fadeDurationMs =
+          _tracks[existing].fadeEnabled ? _tracks[existing].fadeDurationMs : 0;
+    }
     final result = player.play(path);
     setState(() {
       if (result == 0) {
@@ -1256,6 +1264,47 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 6),
                 const Divider(height: 1, color: Colors.white12),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.graphic_eq,
+                          size: 18,
+                          color: t.fadeEnabled ? Colors.orange : Colors.grey),
+                      tooltip: 'Pause/Resume fade',
+                      onPressed: () {
+                        setState(() {
+                          t.fadeEnabled = !t.fadeEnabled;
+                          t.player.fadeDurationMs =
+                              t.fadeEnabled ? t.fadeDurationMs : 0;
+                        });
+                      },
+                    ),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5),
+                        ),
+                        child: Slider(
+                          value: t.fadeDurationMs.toDouble(),
+                          min: 50,
+                          max: 10000,
+                          divisions: 199,
+                          onChanged: t.fadeEnabled
+                              ? (v) {
+                                  setState(() {
+                                    t.fadeDurationMs = v.round();
+                                    t.player.fadeDurationMs = t.fadeDurationMs;
+                                  });
+                                }
+                              : null,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 SizedBox(
                   width: double.infinity,
