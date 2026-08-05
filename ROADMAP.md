@@ -46,6 +46,7 @@
 | **—** | **Atomic volume/pan** — volume y pan como std::atomic<float> eliminan data races en audio callback |
 | **—** | **Crossfade heap alloc elimination** — Pre-allocated xmixBuf/xresampleBuf + ensureCapacity en FLAC handler |
 | **—** | **Dead code cleanup** — Eliminado stub DspProcessor de export_mix.h + removed unused exports |
+| **—** | **Pause/Resume fade** — Volume ramp suave con smoothstep (0–10s configurable) en AAudio callback. Toggle por track con slider en UI |
 
 ### Configuración de publicación
 - **Paquete renombrado:** `audio_engine` → `arc_engine`
@@ -53,6 +54,18 @@
 - **Repositorio:** github.com/FYSPA/Arc-Engine (privado)
 - **Validación:** `dart format`, `flutter analyze`, `flutter test`, `dart pub publish --dry-run` — todo OK
 - **minSdk:** `27` (AAudio callback)
+
+---
+
+## 🔴 Urgente — Integración Arc App
+
+| # | Área | Tarea | Descripción |
+|---|------|-------|-------------|
+| U1 | **Build** | arc_engine build | Primera integración en arc_app. FFI plugin necesita NDK compilado. Si falla, revisar build.gradle del plugin vs arc_app |
+| U2 | **Build** | arx_canvas build | Dependencia pura Dart, menor riesgo. Necesita http y crypto como dependencias transitivas |
+| U3 | **Build** | Solo arm64-v8a | arc_engine solo tiene libs precompiladas para arm64. No funcionará en emuladores x86 |
+| U4 | **Metadata** | FlacMetadataData | Solo FLAC extrae metadata completa. Para MP3/WAV, título/artista vendrán de ArcTrack (MediaStore), no del engine |
+| U5 | **Queue** | Cola de reproducción | Sistema de queue multi-track: agregar, eliminar, reordenar, shuffle. La queue va en la app (ArcApp), no en el engine. El engine provee `setNextTrack()` como bloque fundamental |
 
 ---
 

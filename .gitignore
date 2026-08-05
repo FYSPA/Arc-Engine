@@ -18,6 +18,7 @@ android/build/
 *.o
 *.so
 *.a
+!android/src/main/cpp/libs/**/*.a
 *.dylib
 CMakeUserPresets.json
 CMakeFiles/
