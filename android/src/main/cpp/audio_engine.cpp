@@ -388,7 +388,6 @@ EXPORT int32_t track_get_gap_less_abort(int32_t index) {
 
 EXPORT void track_stop(int32_t index) {
     stopTrack(index);
-    cleanupEngine();
 }
 
 EXPORT void track_pause(int32_t index) {
