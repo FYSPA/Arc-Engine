@@ -65,9 +65,12 @@ class _TrackUiState {
       void Function(String abortedName)? onAborted}) {
     _nameSub?.cancel();
     _nameSub = player.onNameChanged.listen((newName) {
-      debugPrint('streamName[$index]: "$label" -> "$newName"');
+      debugPrint('streamName[$index]: "$label" -> "$newName" '
+          'gapless=${player.isGaplessTransition}');
       label = newName;
-      onNameChanged?.call();
+      if (player.isGaplessTransition) {
+        onNameChanged?.call();
+      }
     });
     _abortSub?.cancel();
     _abortSub = player.onGaplessAborted.listen((abortedName) {

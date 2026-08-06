@@ -56,6 +56,12 @@ class TrackPlayer {
   FlacMetadataData? _metadata;
   String _nextPath = '';
 
+  /// Whether the most recent [onNameChanged] event was from a gapless transition
+  /// (true) or a fresh [play()] call (false). Consumers should check this to
+  /// decide whether to re-queue the next track.
+  bool _isGaplessTransition = false;
+  bool get isGaplessTransition => _isGaplessTransition;
+
   final StreamController<PlaybackState> _stateCtrl =
       StreamController<PlaybackState>.broadcast();
   final StreamController<Duration> _posCtrl =
@@ -277,6 +283,7 @@ class TrackPlayer {
             ? metaDur
             : Duration(milliseconds: _ffi.trackGetDuration(index));
         _nameCtrl.add(_currentName);
+        _isGaplessTransition = false;
         _stateCtrl.add(_state);
         _ensurePortRegistered();
         _instances[index] = this;
@@ -606,6 +613,7 @@ class TrackPlayer {
             _metadata = null;
           }
           _nameCtrl.add(_currentName);
+          _isGaplessTransition = true;
           // Update duration from native (totalFrames is updated during gapless)
           final nativeDurMs = _ffi.trackGetDuration(index);
           debugPrint(
