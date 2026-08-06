@@ -64,6 +64,17 @@ static inline void resetAfterGapless(TrackState &trk, int32_t sr, int32_t ch,
 // Returns false if gapless should be aborted.
 static bool flacGaplessPrep(TrackState &trk, int32_t ch, int32_t ti) {
     if (!trk.preBufReady && gCtl.outChannels >= 2) {
+        // Check stopFd before expensive operations — if stop was requested
+        // while we were in the gapless path, abort immediately instead of
+        // spending 100-2000ms on predecode/resample.
+        {
+            uint64_t dummy;
+            if (read(trk.stopFd, &dummy, sizeof(dummy)) > 0) {
+                LOGI("FLAC thread[%d]: gapless prep aborted — stop requested", ti);
+                abortGapless(trk, true);
+                return false;
+            }
+        }
         // Probe next file — if it's not real FLAC, can't gapless
         ProbedFormat nextFmt = probeAudioFormat(trk.nextPath);
         if (nextFmt != ProbedFormat::FLAC && nextFmt != ProbedFormat::UNKNOWN) {
@@ -109,6 +120,15 @@ static bool flacGaplessPrep(TrackState &trk, int32_t ch, int32_t ti) {
     bool srMismatch = (trk.preBufReady && trk.preBufSampleRate != gCtl.sampleRate
                        && trk.preBufSampleRate > 0);
     if (srMismatch) {
+        // Check stopFd before expensive resample
+        {
+            uint64_t dummy;
+            if (read(trk.stopFd, &dummy, sizeof(dummy)) > 0) {
+                LOGI("FLAC thread[%d]: gapless resample aborted — stop requested", ti);
+                abortGapless(trk, true);
+                return false;
+            }
+        }
         double ratio = (double)gCtl.sampleRate / trk.preBufSampleRate;
         int32_t outFrames = (int32_t)(trk.preBufFrames * ratio);
         float *resampled = new float[outFrames * 2];
@@ -211,9 +231,11 @@ static void fadeOutAndDrain(TrackState &trk, int32_t ch) {
         }
         trk.ringBuf->push(fadeBuf.data(), FADE_FRAMES, ch);
     }
-    // Wait for AAudio to drain the ring buffer — up to 5s safety limit
+    // Wait for AAudio to drain the ring buffer — 100ms limit (down from 5s)
+    // to avoid blocking the Dart main thread during stopTrack(). If not fully
+    // drained, remaining frames are discarded (inaudible click at worst).
     if (trk.ringBuf) {
-        int32_t maxWaitMs = 5000;
+        int32_t maxWaitMs = 100;
         while (trk.ringBuf->available(ch) > 0 && maxWaitMs > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             maxWaitMs -= 10;

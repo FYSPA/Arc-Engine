@@ -133,11 +133,13 @@ void cleanupEngine() {
         if (gCtl.tracks[i].xresampleBuf) { delete[] gCtl.tracks[i].xresampleBuf; gCtl.tracks[i].xresampleBuf = nullptr; gCtl.tracks[i].xresampleBufCapacity = 0; }
     }
 
-    // Close shared AAudio stream
-    if (gCtl.stream) {
-        closeAAudioStream(gCtl.stream);
-        gCtl.stream = nullptr;
-    }
+    // Close shared AAudio stream — moved to stopEngine() to avoid blocking
+    // the Dart main thread during per-track stops. closeAAudioStream() has a
+    // 5s waitForStateChange timeout that would add to worker.join() blocking.
+    // if (gCtl.stream) {
+    //     closeAAudioStream(gCtl.stream);
+    //     gCtl.stream = nullptr;
+    // }
 
     // Delete shared DSP
     if (gCtl.dsp) {
@@ -165,6 +167,12 @@ void stopEngine() {
     LOGI("stopEngine: stopping all tracks");
     stopAllTracks();
     cleanupEngine();
+    // Close shared AAudio stream here (not in cleanupEngine) to avoid blocking
+    // the Dart main thread during per-track stop/play cycles.
+    if (gCtl.stream) {
+        closeAAudioStream(gCtl.stream);
+        gCtl.stream = nullptr;
+    }
     resetCtl();
     LOGI("stopEngine: done");
 }
