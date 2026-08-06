@@ -27,6 +27,7 @@
 #include <cstring>
 #include <string>
 #include <cctype>
+#include <thread>
 #include <jni.h>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
@@ -204,7 +205,7 @@ static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
-bool predecodeFlac(TrackState &trk, const char *path) {
+bool predecodeFlac(TrackState &trk, const char *path, int32_t expectedGen) {
     FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
     if (!decoder) { LOGE("  predecode FLAC: decoder_new failed: %s", path); return false; }
     auto *ctx = new PreDecodeCtx();
@@ -250,6 +251,16 @@ bool predecodeFlac(TrackState &trk, const char *path) {
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
     if (ctx->totalFrames > 0) {
+        // Check generation — if track_set_next was called again while we were decoding,
+        // discard results to avoid writing stale data into a new track slot.
+        // Skip check when expectedGen < 0 (synchronous callers on decoder thread).
+        if (expectedGen >= 0 && trk.preBufGeneration.load(std::memory_order_acquire) != expectedGen) {
+            LOGI("  predecode FLAC: generation mismatch (expected=%d, current=%d) — discarding",
+                 expectedGen, trk.preBufGeneration.load(std::memory_order_acquire));
+            delete[] ctx->buf;
+            delete ctx;
+            return false;
+        }
         trk.preBuf = ctx->buf;
         trk.preBufFrames = ctx->totalFrames;
         trk.preBufChannels = 2;  // buffer is always stereo (mono duped to both channels)
@@ -269,7 +280,7 @@ bool predecodeFlac(TrackState &trk, const char *path) {
             LOGI("  predecode FLAC: pre-resampled %d→%d frames (%dHz→%dHz)",
                  ctx->totalFrames, outFrames, ctx->sampleRate, gCtl.sampleRate);
         }
-        trk.preBufReady = 1;
+        trk.preBufReady.store(1, std::memory_order_release);
         LOGI("  predecode FLAC: %d frames ready, %d ch, sr=%d", ctx->totalFrames, trk.preBufChannels, ctx->sampleRate);
     } else {
         LOGW("  predecode FLAC: zero frames decoded — not using preBuf: %s", path);
@@ -521,9 +532,16 @@ EXPORT void track_set_next(int32_t index, const char *path) {
             return;
         }
         if (gCtl.outChannels >= 2) {
-            if (!predecodeFlac(trk, path)) {
-                LOGW("track_set_next[%d]: predecode failed — gapless will be skipped", index);
-            }
+            // Run predecode on a background thread to avoid blocking the Dart main thread.
+            // Bump generation so a stale predecode (from a previous track_set_next) discards.
+            int32_t gen = trk.preBufGeneration.fetch_add(1) + 1;
+            std::string pathCopy(path);
+            std::thread([index, pathCopy, gen]() {
+                TrackState &t = gCtl.tracks[index];
+                if (!predecodeFlac(t, pathCopy.c_str(), gen)) {
+                    LOGW("track_set_next[%d]: async predecode failed — gapless will be skipped", index);
+                }
+            }).detach();
         } else {
             LOGI("track_set_next[%d]: skipping predecode (outChannels=%d)", index, gCtl.outChannels);
         }

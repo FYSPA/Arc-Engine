@@ -47,7 +47,9 @@ bool checkFlacFormatMatch(const char *path, int32_t expectedSampleRate, int32_t 
 struct TrackState;
 // Pre-decode first MAX_PREDECODE_FRAMES frames of a FLAC file into trk.preBuf.
 // Creates a temporary decoder that is fully cleaned up. Returns true on success.
-bool predecodeFlac(TrackState &trk, const char *path);
+// If expectedGen >= 0, checks against trk.preBufGeneration before writing results
+// (returns false if generation mismatch, meaning track_set_next was called again).
+bool predecodeFlac(TrackState &trk, const char *path, int32_t expectedGen = -1);
 
 extern "C" {
 EXPORT int32_t get_flac_info(const char* path, FlacInfo* outInfo);

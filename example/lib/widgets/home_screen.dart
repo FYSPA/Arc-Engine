@@ -357,15 +357,16 @@ class _HomeScreenState extends State<HomeScreen> {
         wt.startWaveformStream(() {
           if (mounted) setState(() {});
         });
-        // Analyze static waveform for seek visualization
+        // Analyze static waveform for seek visualization (async to avoid blocking UI)
         if (wt.waveformPeaks.isEmpty) {
-          final peaks = player.analyzeWaveform(numBars: 100);
-          if (mounted && peaks.isNotEmpty) {
-            setState(() {
-              wt.waveformPeaks = peaks;
-              wt.waveformLoading = false;
-            });
-          }
+          player.analyzeWaveformAsync(numBars: 100).then((peaks) {
+            if (mounted && peaks.isNotEmpty) {
+              setState(() {
+                wt.waveformPeaks = peaks;
+                wt.waveformLoading = false;
+              });
+            }
+          });
         }
       } else {
         debugPrint('_startPlayback[$idx]: START ERROR $result');
@@ -446,13 +447,14 @@ class _HomeScreenState extends State<HomeScreen> {
       trackUi.sliderValue =
           newDur > 0 ? newPos.toDouble().clamp(0.0, newDur.toDouble()) : 0.0;
     });
-    // Re-analyze waveform for the new song
-    final peaks = player.analyzeWaveform(numBars: 100);
-    if (mounted) {
-      setState(() {
-        trackUi.waveformPeaks = peaks;
-      });
-    }
+    // Re-analyze waveform for the new song (async to avoid blocking UI)
+    player.analyzeWaveformAsync(numBars: 100).then((peaks) {
+      if (mounted) {
+        setState(() {
+          trackUi.waveformPeaks = peaks;
+        });
+      }
+    });
     final label = trackUi.label;
     final idx = _audioFiles.indexWhere((e) => _fileName(e.path) == label);
     debugPrint(

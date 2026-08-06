@@ -85,7 +85,7 @@ static bool flacGaplessPrep(TrackState &trk, int32_t ch, int32_t ti) {
             abortGapless(trk, true);
             return false;
         }
-        if (!predecodeFlac(trk, trk.nextPath)) {
+        if (!predecodeFlac(trk, trk.nextPath, -1)) {
             LOGW("FLAC thread[%d]: gapless predecode failed for %s — aborting gapless", ti, trk.nextPath);
             abortGapless(trk, true);
             return false;
@@ -525,7 +525,7 @@ void flacPlaybackThread(int ti) {
     // predecode was skipped (outChannels=0). Now that stream exists, do it.
     if (wasNew && trk.hasNext && !trk.preBufReady && gCtl.outChannels >= 2) {
         LOGI("FLAC thread[%d]: post-stream predecode for %s", ti, trk.nextPath);
-        if (!predecodeFlac(trk, trk.nextPath)) {
+        if (!predecodeFlac(trk, trk.nextPath, -1)) {
             LOGW("FLAC thread[%d]: post-stream predecode failed — gapless will be skipped", ti);
         }
     }

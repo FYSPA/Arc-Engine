@@ -77,6 +77,7 @@ struct TrackState {
     int preBufSampleRate{0};           // source sample rate of preBuf (for resampling on SR mismatch)
     int32_t preBufOrigFrames{0};       // original frame count before SR resampling (for seek in new decoder)
     std::atomic<int> preBufReady{0};
+    std::atomic<int32_t> preBufGeneration{0};  // bumped on each track_set_next, async predecode checks before writing
 
     // Flag: skip pacing check after gapless transition to prevent decoder stall
     std::atomic<int> skipPacing{0};

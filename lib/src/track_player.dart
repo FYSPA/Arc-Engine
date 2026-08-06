@@ -270,7 +270,6 @@ class TrackPlayer {
   /// Stops any existing playback first. Returns 0 on success, negative on error.
   int play(String path) {
     stop();
-    _loadMetadata(path);
     final pathPtr = path.toNativeUtf8();
     try {
       final result = _ffi.trackPlay(index, pathPtr);
@@ -278,10 +277,11 @@ class TrackPlayer {
         _state = PlaybackState.playing;
         _currentName = path.split('/').last;
         _lastGapLessVersion = _ffi.trackGetGapLessVersion(index);
-        final metaDur = _metadata?.duration;
-        _duration = (metaDur != null && metaDur.inMilliseconds > 0)
-            ? metaDur
-            : Duration(milliseconds: _ffi.trackGetDuration(index));
+        // Use native duration (always correct after trackPlay).
+        // Metadata duration was previously used here for accuracy, but metadata
+        // is now deferred to avoid blocking play(). The metadata stream will
+        // push accurate duration later if needed.
+        _duration = Duration(milliseconds: _ffi.trackGetDuration(index));
         _nameCtrl.add(_currentName);
         _isGaplessTransition = false;
         _stateCtrl.add(_state);
@@ -292,6 +292,10 @@ class TrackPlayer {
         // Re-apply loop flag (cleared by stop() above)
         if (_repeatCount != 0) _ffi.trackSetLoop(index, _repeatCount);
         _startGaplessPolling();
+        // Defer metadata loading — it's purely cosmetic (title/artist) and involves
+        // blocking FFI calls (50-200ms for real FLACs, 10-50ms for false FLACs).
+        // Scheduling after the current frame lets the UI render before blocking.
+        scheduleMicrotask(() => _loadMetadata(path));
       }
       return result;
     } finally {
@@ -465,7 +469,7 @@ class TrackPlayer {
   }
 
   /// Analyzes the audio file and returns peak amplitude per bar for waveform visualization.
-  /// Synchronous FFI call (~50-200ms). Returns empty list if unsupported or fails.
+  /// Synchronous FFI call (~200ms-2s). Returns empty list if unsupported or fails.
   List<double> analyzeWaveform({int numBars = 500}) {
     final buffer = calloc<Float>(numBars);
     try {
@@ -475,6 +479,15 @@ class TrackPlayer {
     } finally {
       calloc.free(buffer);
     }
+  }
+
+  /// Async version of [analyzeWaveform] that defers to avoid blocking the UI.
+  /// Returns a Future that completes with the waveform peaks after a microtask,
+  /// giving the UI a chance to render first.
+  Future<List<double>> analyzeWaveformAsync({int numBars = 500}) async {
+    // Defer to next event loop tick so UI can render first
+    await Future<void>.delayed(Duration.zero);
+    return analyzeWaveform(numBars: numBars);
   }
 
   /// Stops playback and releases stream controllers.
