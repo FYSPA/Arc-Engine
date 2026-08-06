@@ -13,6 +13,7 @@
 #include <vector>
 #include <math.h>
 #include <cstring>
+#include <cstdio>
 #include <android/log.h>
 #include <atomic>
 #include <chrono>
@@ -224,3 +225,43 @@ inline void pushErrorToDart(int32_t trackIndex, const char* errorMessage,
 
     Dart_PostCObject_DL((Dart_Port_DL)dartPort, &msg);
 }
+
+// ─── Audio format probe ──────────────────────────────────────────────────────
+// Reads the first 12 bytes of a file to detect the real audio format,
+// regardless of the file extension. Handles mislabeled files (e.g. MP3
+// saved as .flac) which would otherwise fail silently in the wrong decoder.
+
+enum class ProbedFormat { UNKNOWN, FLAC, MP3, OGG, M4A };
+
+static inline ProbedFormat probeAudioFormat(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return ProbedFormat::UNKNOWN;
+
+    unsigned char header[12] = {};
+    size_t n = fread(header, 1, 12, f);
+    fclose(f);
+    if (n < 4) return ProbedFormat::UNKNOWN;
+
+    // fLaC — real FLAC
+    if (header[0] == 0x66 && header[1] == 0x4C && header[2] == 0x61 && header[3] == 0x43)
+        return ProbedFormat::FLAC;
+
+    // ID3v2 tag — MP3
+    if (header[0] == 0x49 && header[1] == 0x44 && header[2] == 0x33)
+        return ProbedFormat::MP3;
+
+    // MPEG frame sync — MP3
+    if (header[0] == 0xFF && (header[1] & 0xE0) == 0xE0)
+        return ProbedFormat::MP3;
+
+    // OggS — OGG container (Vorbis/Opus/FLAC-in-OGG)
+    if (header[0] == 0x4F && header[1] == 0x67 && header[2] == 0x67 && header[3] == 0x53)
+        return ProbedFormat::OGG;
+
+    // ftyp at offset 4 — MP4/M4A/AAC
+    if (n >= 8 && header[4] == 0x66 && header[5] == 0x74 && header[6] == 0x79 && header[7] == 0x70)
+        return ProbedFormat::M4A;
+
+    return ProbedFormat::UNKNOWN;
+}
+

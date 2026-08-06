@@ -204,9 +204,9 @@ static FLAC__StreamDecoderWriteStatus predecodeWriteCb(
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
-void predecodeFlac(TrackState &trk, const char *path) {
+bool predecodeFlac(TrackState &trk, const char *path) {
     FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
-    if (!decoder) { LOGE("  predecode FLAC: decoder_new failed"); return; }
+    if (!decoder) { LOGE("  predecode FLAC: decoder_new failed: %s", path); return false; }
     auto *ctx = new PreDecodeCtx();
     ctx->buf = new float[MAX_PREDECODE_FRAMES * 2];
     ctx->maxFrames = MAX_PREDECODE_FRAMES;
@@ -217,16 +217,14 @@ void predecodeFlac(TrackState &trk, const char *path) {
         decoder, path, predecodeWriteCb, predecodeMetadataCb, errorCallback, ctx);
     if (st == FLAC__STREAM_DECODER_INIT_STATUS_OK) {
         if (!FLAC__stream_decoder_process_until_end_of_metadata(decoder)) {
-            LOGE("  predecode FLAC: metadata failed — file may be corrupted: %s", path);
+            FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
+            LOGE("  predecode FLAC: metadata failed (state=%d) — file may be corrupted: %s", ds, path);
         } else {
-            // After metadata, we know source sample rate. Calculate required input frames
-            // so that after SR resampling we have enough frames for the full crossfade.
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
             if (fadeLen > 0 && gCtl.sampleRate > 0 && ctx->sampleRate > 0
                 && ctx->sampleRate != gCtl.sampleRate) {
                 int32_t requiredInput = (int32_t)((int64_t)fadeLen * ctx->sampleRate / gCtl.sampleRate);
                 if (requiredInput > ctx->maxFrames) {
-                    // Reallocate larger buffer for SR mismatch crossfade
                     float *newBuf = new float[requiredInput * 2];
                     int32_t copied = ctx->totalFrames * 2;
                     for (int32_t i = 0; i < copied; i++) newBuf[i] = ctx->buf[i];
@@ -244,9 +242,10 @@ void predecodeFlac(TrackState &trk, const char *path) {
                 if (!FLAC__stream_decoder_process_single(decoder)) break;
             }
         }
-        LOGI("  predecode FLAC: %d frames decoded", ctx->totalFrames);
+        FLAC__StreamDecoderState finalState = FLAC__stream_decoder_get_state(decoder);
+        LOGI("  predecode FLAC: %d frames decoded (state=%d)", ctx->totalFrames, finalState);
     } else {
-        LOGE("  predecode FLAC: init_file failed: %d", st);
+        LOGE("  predecode FLAC: init_file failed: %d — %s", st, path);
     }
     FLAC__stream_decoder_finish(decoder);
     FLAC__stream_decoder_delete(decoder);
@@ -273,10 +272,11 @@ void predecodeFlac(TrackState &trk, const char *path) {
         trk.preBufReady = 1;
         LOGI("  predecode FLAC: %d frames ready, %d ch, sr=%d", ctx->totalFrames, trk.preBufChannels, ctx->sampleRate);
     } else {
-        LOGI("  predecode FLAC: zero frames decoded — not using preBuf");
+        LOGW("  predecode FLAC: zero frames decoded — not using preBuf: %s", path);
         delete[] ctx->buf;
     }
     delete ctx;
+    return ctx->totalFrames > 0;
 }
 
 // ─── EQ pending apply (called by decoder thread after creating gCtl.dsp) ───
@@ -513,8 +513,17 @@ EXPORT void track_set_next(int32_t index, const char *path) {
     trk.crossfadePreBufPos = 0;
     const char *ext = strrchr(path, '.');
     if (ext && (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".FLAC") == 0)) {
+        // Probe real format — skip FLAC predecode for mislabeled files
+        ProbedFormat realFmt = probeAudioFormat(path);
+        if (realFmt != ProbedFormat::FLAC && realFmt != ProbedFormat::UNKNOWN) {
+            LOGI("track_set_next[%d]: .flac ext but real format is %d — skipping FLAC predecode",
+                 index, (int)realFmt);
+            return;
+        }
         if (gCtl.outChannels >= 2) {
-            predecodeFlac(trk, path);
+            if (!predecodeFlac(trk, path)) {
+                LOGW("track_set_next[%d]: predecode failed — gapless will be skipped", index);
+            }
         } else {
             LOGI("track_set_next[%d]: skipping predecode (outChannels=%d)", index, gCtl.outChannels);
         }

@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:ffi';
 import 'dart:isolate';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'ffi_bindings.dart' show FfiInterface, FlacMetadata;
 import 'flac_metadata.dart';
@@ -271,8 +272,10 @@ class TrackPlayer {
         _state = PlaybackState.playing;
         _currentName = path.split('/').last;
         _lastGapLessVersion = _ffi.trackGetGapLessVersion(index);
-        _duration = _metadata?.duration ??
-            Duration(milliseconds: _ffi.trackGetDuration(index));
+        final metaDur = _metadata?.duration;
+        _duration = (metaDur != null && metaDur.inMilliseconds > 0)
+            ? metaDur
+            : Duration(milliseconds: _ffi.trackGetDuration(index));
         _nameCtrl.add(_currentName);
         _stateCtrl.add(_state);
         _ensurePortRegistered();
@@ -300,8 +303,9 @@ class TrackPlayer {
     try {
       final result = _ffi.getFlacMetadata(pathPtr, metaPtr);
       if (result != 0) {
-        _metadata = null;
-        _metadataCtrl.add(null);
+        // FLAC metadata failed — file may be mislabeled (e.g. MP3 saved as .flac)
+        _metadata = _parseFilename(path);
+        _metadataCtrl.add(_metadata);
         return;
       }
       final m = metaPtr.ref;
@@ -329,6 +333,56 @@ class TrackPlayer {
       calloc.free(pathPtr);
       calloc.free(metaPtr);
     }
+  }
+
+  /// Parses a filename to extract title and artist when FLAC metadata is unavailable.
+  ///
+  /// Handles common patterns:
+  /// - "08 - CHAVALITAS - Fuerza Regida.flac" → artist: CHAVALITAS, title: Fuerza Regida
+  /// - "$AD BOYZ II - Junior H.flac" → artist: BOYZ II, title: Junior H
+  /// - "40 - Wos.flac" → title: Wos
+  /// - "&burn - Billie Eilish.flac" → artist: Billie Eilish, title: burn
+  static FlacMetadataData _parseFilename(String path) {
+    final name = path.split('/').last; // strip directory
+    final withoutExt =
+        name.replaceAll(RegExp(r'\.[^.]+$'), ''); // strip extension
+    String title = withoutExt;
+    String artist = '';
+
+    // Try "NN - Artist - Title" pattern (3 parts after split by " - ")
+    final parts = withoutExt.split(RegExp(r'\s+-\s+'));
+    if (parts.length >= 3) {
+      // "08 - CHAVALITAS - Fuerza Regida" → artist=CHAVALITAS, title=Fuerza Regida
+      artist = parts[1].trim();
+      title = parts.sublist(2).join(' - ').trim();
+    } else if (parts.length == 2) {
+      // "08 - Wos" or "&burn - Billie Eilish"
+      final numOrEmpty = parts[0].trim();
+      final isNumeric = RegExp(r'^\d+$').hasMatch(numOrEmpty);
+      if (isNumeric) {
+        // "08 - Wos" → title=Wos (no artist)
+        title = parts[1].trim();
+      } else {
+        // "&burn - Billie Eilish" → title=&burn, artist=Billie Eilish
+        title = numOrEmpty;
+        artist = parts[1].trim();
+      }
+    }
+
+    final titleClean = computeTitleClean(title);
+    return FlacMetadataData(
+      sampleRate: 0,
+      bitDepth: 0,
+      channels: 0,
+      totalSamples: 0,
+      bitrate: 0,
+      title: title,
+      titleClean: titleClean,
+      artist: artist,
+      album: '',
+      isrc: '',
+      duration: Duration.zero,
+    );
   }
 
   /// Stops playback and resets position to zero. Cancels polling timer.
@@ -477,8 +531,19 @@ class TrackPlayer {
 
     if (running) {
       if (_state != PlaybackState.playing) {
+        debugPrint(
+            'nativeUpdate[$index]: state transition ${_state.name} -> playing');
         _state = PlaybackState.playing;
         _stateCtrl.add(_state);
+      }
+      // Retry duration for MediaCodec (not available at play() time)
+      if (_duration.inMilliseconds <= 0) {
+        final durMs = _ffi.trackGetDuration(index);
+        debugPrint(
+            'nativeUpdate[$index]: durRetry dur=${_duration.inMilliseconds}ms -> nativeDur=$durMs');
+        if (durMs > 0) {
+          _duration = Duration(milliseconds: durMs);
+        }
       }
       // Suppress position updates during seek window to prevent slider jump-back
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -489,6 +554,8 @@ class TrackPlayer {
         }
       }
     } else if (_state == PlaybackState.playing) {
+      debugPrint(
+          'nativeUpdate[$index]: running=false but was playing -> stopped, pos=0');
       _state = PlaybackState.stopped;
       _position = Duration.zero;
       _instances.remove(index);
@@ -507,18 +574,30 @@ class TrackPlayer {
   void _startGaplessPolling() {
     _gaplessTimer?.cancel();
     _wasPlaying = true;
+    final startTime = DateTime.now().millisecondsSinceEpoch;
     _gaplessTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       final curVersion = _ffi.trackGetGapLessVersion(index);
       if (curVersion != _lastGapLessVersion) {
+        final abort = _ffi.trackGetGapLessAbort(index);
+        debugPrint(
+            'gaplessPoll[$index]: version ${_lastGapLessVersion}->$curVersion, '
+            'abort=$abort, nextName="$_nextName", wasPlaying=$_wasPlaying');
         _lastGapLessVersion = curVersion;
-        if (_ffi.trackGetGapLessAbort(index) != 0) {
+        if (abort != 0) {
+          debugPrint(
+              'gaplessPoll[$index]: ABORT detected — pushing _nextName="$_nextName"');
           if (_nextName.isNotEmpty) {
             _abortCtrl.add(_nextName);
           }
           _nextName = '';
         } else if (_nextName.isNotEmpty) {
+          debugPrint(
+              'gaplessPoll[$index]: NAME changed — cur="$_nextName", dur=${_duration.inMilliseconds}ms');
           _currentName = _nextName;
           _nextName = '';
+          // Reset position BEFORE _nameCtrl triggers _reQueueNext —
+          // otherwise _reQueueNext reads stale position from the previous track
+          _position = Duration.zero;
           // Load metadata for the next track before clearing path
           if (_nextPath.isNotEmpty) {
             _loadMetadata(_nextPath);
@@ -529,13 +608,19 @@ class TrackPlayer {
           _nameCtrl.add(_currentName);
           // Update duration from native (totalFrames is updated during gapless)
           final nativeDurMs = _ffi.trackGetDuration(index);
+          debugPrint(
+              'gaplessPoll[$index]: nativeDur=$nativeDurMs, prevDur=${_duration.inMilliseconds}ms');
           if (nativeDurMs > 0) {
             _duration = Duration(milliseconds: nativeDurMs);
           }
         }
       }
       // Detect song end (native push may not arrive for all formats)
-      if (_wasPlaying && _ffi.trackIsPlaying(index) == 0) {
+      // Grace period: MediaCodec needs ~600ms to set running=1, avoid false positive
+      final elapsed = DateTime.now().millisecondsSinceEpoch - startTime;
+      if (_wasPlaying && _ffi.trackIsPlaying(index) == 0 && elapsed > 1000) {
+        debugPrint(
+            'gaplessPoll[$index]: SONG END — wasPlaying=$_wasPlaying, isPlaying=${_ffi.trackIsPlaying(index)}');
         _wasPlaying = false;
         _state = PlaybackState.stopped;
         _position = Duration.zero;

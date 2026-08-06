@@ -34,6 +34,9 @@
 #include <media/NdkMediaExtractor.h>
 #include <media/NdkMediaFormat.h>
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+static constexpr float HALF_PI = 1.57079632679f;
+
 // ─── Gapless Helper Functions ───────────────────────────────────────────────
 
 static inline void abortGapless(TrackState &trk, bool abort = false) {
@@ -61,7 +64,32 @@ static inline void resetAfterGapless(TrackState &trk, int32_t sr, int32_t ch,
 // Returns false if gapless should be aborted.
 static bool flacGaplessPrep(TrackState &trk, int32_t ch, int32_t ti) {
     if (!trk.preBufReady && gCtl.outChannels >= 2) {
-        predecodeFlac(trk, trk.nextPath);
+        // Probe next file — if it's not real FLAC, can't gapless
+        ProbedFormat nextFmt = probeAudioFormat(trk.nextPath);
+        if (nextFmt != ProbedFormat::FLAC && nextFmt != ProbedFormat::UNKNOWN) {
+            LOGI("FLAC thread[%d]: gapless next is format %d (not FLAC), fading out ring buffer: %s",
+                 ti, (int)nextFmt, trk.nextPath);
+            if (trk.ringBuf && trk.writtenFrames > 0 && ch > 0) {
+                int32_t avail = trk.ringBuf->available(ch);
+                if (avail > 0) {
+                    std::vector<float> fadeBuf(avail * ch);
+                    for (int32_t i = 0; i < avail; i++) {
+                        float g = sinf((1.0f - (float)i / avail) * HALF_PI);
+                        for (int c = 0; c < ch; c++)
+                            fadeBuf[i * ch + c] = trk.lastFrame[c < 2 ? c : 0] * g;
+                    }
+                    trk.ringBuf->push(fadeBuf.data(), avail, ch);
+                    LOGI("FLAC thread[%d]: faded out %d ring buffer frames", ti, avail);
+                }
+            }
+            abortGapless(trk, true);
+            return false;
+        }
+        if (!predecodeFlac(trk, trk.nextPath)) {
+            LOGW("FLAC thread[%d]: gapless predecode failed for %s — aborting gapless", ti, trk.nextPath);
+            abortGapless(trk, true);
+            return false;
+        }
     }
     if (!checkFlacFormatMatch(trk.nextPath, gCtl.sampleRate, gCtl.outChannels)) {
         bool channelsDiffer = trk.preBufReady && trk.preBufChannels != gCtl.outChannels;
@@ -172,8 +200,6 @@ static bool checkMediaExtractorFormat(AMediaExtractor *tmpExt, int32_t targetSR,
     }
     return found && outSR == targetSR && outCh == targetCh;
 }
-
-static constexpr float HALF_PI = 1.57079632679f;
 
 static void fadeOutAndDrain(TrackState &trk, int32_t ch) {
     if (trk.ringBuf && trk.writtenFrames > 0) {
@@ -458,18 +484,28 @@ void flacPlaybackThread(int ti) {
     ps.trackIndex = ti;
 
     FLAC__StreamDecoder *decoder = FLAC__stream_decoder_new();
-    if (!decoder) { trk.running = false; return; }
+    if (!decoder) {
+        LOGE("FLAC thread[%d]: decoder_new failed: %s", ti, trk.path);
+        trk.running = false; return;
+    }
 
     FLAC__stream_decoder_set_metadata_respond_all(decoder);
     FLAC__StreamDecoderInitStatus st = FLAC__stream_decoder_init_file(
         decoder, trk.path, flacEngineWriteCallback, metadataCallback, errorCallback, &ps);
     if (st != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
+        ProbedFormat realFmt = probeAudioFormat(trk.path);
+        LOGE("FLAC thread[%d]: init_file failed (status=%d, real format=%d): %s",
+             ti, st, (int)realFmt, trk.path);
         FLAC__stream_decoder_delete(decoder);
         trk.running = false; return;
     }
 
     FLAC__stream_decoder_process_until_end_of_metadata(decoder);
     if (ps.info.sampleRate == 0 || ps.info.channels == 0) {
+        ProbedFormat realFmt = probeAudioFormat(trk.path);
+        FLAC__StreamDecoderState ds = FLAC__stream_decoder_get_state(decoder);
+        LOGE("FLAC thread[%d]: metadata failed (sr=%d ch=%d state=%d real format=%d): %s",
+             ti, ps.info.sampleRate, ps.info.channels, ds, (int)realFmt, trk.path);
         FLAC__stream_decoder_delete(decoder);
         trk.running = false; return;
     }
@@ -489,7 +525,9 @@ void flacPlaybackThread(int ti) {
     // predecode was skipped (outChannels=0). Now that stream exists, do it.
     if (wasNew && trk.hasNext && !trk.preBufReady && gCtl.outChannels >= 2) {
         LOGI("FLAC thread[%d]: post-stream predecode for %s", ti, trk.nextPath);
-        predecodeFlac(trk, trk.nextPath);
+        if (!predecodeFlac(trk, trk.nextPath)) {
+            LOGW("FLAC thread[%d]: post-stream predecode failed — gapless will be skipped", ti);
+        }
     }
     // Post-stream pre-resample: predecodeFlac couldn't pre-resample because
     // stream didn't exist yet. Do it now.
@@ -531,11 +569,20 @@ void flacPlaybackThread(int ti) {
             int32_t fadeLen = crossfadeMsToFrames(gCtl.crossfadeMs.load());
             int64_t remaining = ps.info.totalSamples - trk.writtenFrames;
             if (remaining > 0 && remaining <= fadeLen) {
-                LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d) preBufPos=%d",
-                     ti, (long long)remaining, fadeLen, trk.crossfadePreBufPos);
-                trk.fadeLen.store(fadeLen);
-                trk.crossfading = 1;
-                trk.crossfadeRemaining = (int32_t)remaining;
+                // Probe next file — if it's not real FLAC, can't crossfade.
+                // Skip crossfade entirely and let the song play to EOS.
+                // At EOS, flacGaplessPrep will handle the non-FLAC abort cleanly.
+                ProbedFormat nextFmt = probeAudioFormat(trk.nextPath);
+                if (nextFmt != ProbedFormat::FLAC && nextFmt != ProbedFormat::UNKNOWN) {
+                    LOGI("FLAC thread[%d]: EARLY CROSSFADE skipped — next is format %d (not FLAC), playing to EOS: %s",
+                         ti, (int)nextFmt, trk.nextPath);
+                } else {
+                    LOGI("FLAC thread[%d]: EARLY CROSSFADE trigger: remaining=%lld <= fadeLen(%d) preBufPos=%d",
+                         ti, (long long)remaining, fadeLen, trk.crossfadePreBufPos);
+                    trk.fadeLen.store(fadeLen);
+                    trk.crossfading = 1;
+                    trk.crossfadeRemaining = (int32_t)remaining;
+                }
                 // Do NOT reset crossfadePreBufPos — if re-triggered after applyFadeIn
                 // resets crossfading, we must preserve write callback's progress.
                 // Do NOT goto flac_gapless — let old decoder keep running.
@@ -797,6 +844,31 @@ void mediaPlaybackThread(int ti) {
                 continue;
             } else if (trk.hasNext) {
               media_force_gapless:
+                // CRITICAL: If next track is real FLAC, abort MediaCodec cascade.
+                // The FLAC decoder provides true crossfade via flacEngineWriteCallback.
+                // MediaCodec gapless would trap the FLAC in AMediaCodec, losing crossfade forever.
+                {
+                    ProbedFormat nextFmt = probeAudioFormat(trk.nextPath);
+                    if (nextFmt == ProbedFormat::FLAC) {
+                        LOGI("Media thread[%d]: next is real FLAC — aborting MediaCodec cascade to restore crossfade: %s",
+                             ti, trk.nextPath);
+                        // Quick fade-out (50ms) for smooth transition
+                        if (trk.ringBuf && trk.writtenFrames > 0 && outCh > 0) {
+                            int32_t fadeFrames = std::min((int32_t)(gCtl.sampleRate * 50 / 1000), trk.ringBuf->available(outCh));
+                            if (fadeFrames > 0) {
+                                std::vector<float> fadeBuf(fadeFrames * outCh);
+                                for (int32_t i = 0; i < fadeFrames; i++) {
+                                    float g = sinf((1.0f - (float)i / fadeFrames) * HALF_PI);
+                                    for (int c = 0; c < outCh; c++)
+                                        fadeBuf[i * outCh + c] = trk.lastFrame[c < 2 ? c : 0] * g;
+                                }
+                                trk.ringBuf->push(fadeBuf.data(), fadeFrames, outCh);
+                            }
+                        }
+                        abortGapless(trk, true);
+                        break;
+                    }
+                }
                 // Pre-check: validate new file format before destroying old resources
                 {
                     int tmpFd = open(trk.nextPath, O_RDONLY);
@@ -851,7 +923,13 @@ void mediaPlaybackThread(int ti) {
                 outCh = ch; threshold = RingBuffer::pacingThreshold(ch);
                 inputDone = false; outputDone = false;
                 resetAfterGapless(trk, sr, ch, trk.totalFrames);
-                LOGI("Media thread[%d]: gapless -> %s", ti, trk.path);
+                // Push position 0 immediately so Dart shows correct position post-swap
+                // (mirrors FLAC thread behavior at line 646-650)
+                trk.lastCallbackMs = 0;
+                if (trk.sampleRate > 0) {
+                    pushPositionToDart(ti, 0, true, trk.lastCallbackMs, gCtl.dartPort);
+                }
+                LOGI("Media thread[%d]: gapless -> %s (pos pushed 0ms)", ti, trk.path);
                 continue; }
             } else break;
         }

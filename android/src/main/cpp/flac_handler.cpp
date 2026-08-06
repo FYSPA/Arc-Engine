@@ -17,7 +17,9 @@
 
 #include <cstring>
 #include <vector>
+#include <unordered_set>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <aaudio/AAudio.h>
 #include <FLAC/metadata.h>
 
@@ -56,8 +58,22 @@ void metadataCallback(
 }
 
 void errorCallback(
-    const FLAC__StreamDecoder*, FLAC__StreamDecoderErrorStatus status, void*) {
-    LOGE("FLAC error: %d", status);
+    const FLAC__StreamDecoder *decoder, FLAC__StreamDecoderErrorStatus status, void*) {
+    // Rate-limit: log at most once per second globally, and first error per decoder
+    static thread_local std::chrono::steady_clock::time_point lastErrorLog{};
+    static thread_local int lastErrorCount{0};
+    thread_local std::unordered_set<const void*> seenDecoders{};
+    auto now = std::chrono::steady_clock::now();
+    bool isFirstForDecoder = seenDecoders.insert(decoder).second;
+    bool enoughTimePassed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - lastErrorLog).count() >= 500;
+    if (isFirstForDecoder || enoughTimePassed) {
+        LOGE("FLAC error: status=%d decoder=%p tid=%d (suppressed %d prior)", status, decoder, gettid(), lastErrorCount);
+        lastErrorLog = now;
+        lastErrorCount = 0;
+    } else {
+        lastErrorCount++;
+    }
 }
 
 FLAC__StreamDecoderWriteStatus playWriteCallback(

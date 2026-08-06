@@ -49,6 +49,8 @@ class _TrackUiState {
   List<double> waveformSamples = [];
   List<double> waveformPeaks = [];
   bool waveformLoading = false;
+  String? _lastQueuedPath;
+  DateTime? _lastQueuedTime;
   StreamSubscription<List<double>>? _waveformSub;
 
   StreamSubscription<String>? _nameSub;
@@ -63,13 +65,14 @@ class _TrackUiState {
       void Function(String abortedName)? onAborted}) {
     _nameSub?.cancel();
     _nameSub = player.onNameChanged.listen((newName) {
-      debugPrint('startNameListener[${player.index}]: "$label" -> "$newName"');
+      debugPrint('streamName[$index]: "$label" -> "$newName"');
       label = newName;
       onNameChanged?.call();
     });
     _abortSub?.cancel();
     _abortSub = player.onGaplessAborted.listen((abortedName) {
-      debugPrint('startNameListener[${player.index}]: ABORTED "$abortedName"');
+      debugPrint(
+          'streamAbort[$index]: ABORTED "$abortedName" (label="$label")');
       onAborted?.call(abortedName);
     });
   }
@@ -242,12 +245,20 @@ class _HomeScreenState extends State<HomeScreen> {
             p.state == PlaybackState.paused) {
           anyRunning = true;
           t.running = true;
+          final oldPos = t.position;
           t.position = p.position.inMilliseconds;
           t.duration = p.duration.inMilliseconds;
           t.sliderValue = t.duration > 0
               ? t.position.toDouble().clamp(0.0, t.duration.toDouble())
               : 0.0;
+          // Log position resets (potential issue indicator)
+          if (oldPos > 1000 && t.position < 100) {
+            debugPrint(
+                'posPoll[${t.index}]: POSITION RESET old=${oldPos}ms -> new=${t.position}ms dur=${t.duration}ms state=${p.state.name}');
+          }
         } else if (t.running) {
+          debugPrint(
+              'posPoll[${t.index}]: STOPPED state=${p.state.name} — resetting pos=0, dur=0');
           t.running = false;
           t.paused = false;
           t.sliderValue = 0.0;
@@ -261,6 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
             : 0.0;
         _engineRunning = true;
       } else if (_engineRunning) {
+        debugPrint('posPoll: engine no longer running, resetting');
         setState(() {
           _engineRunning = false;
           _enginePaused = false;
@@ -291,19 +303,28 @@ class _HomeScreenState extends State<HomeScreen> {
   void _startPlayback(String path, String label, {int? trackIndex}) {
     final f = File(path);
     if (!f.existsSync()) {
+      debugPrint('_startPlayback: FILE NOT FOUND: $path');
       setState(() => _status = 'File not found: $path');
       return;
     }
     final idx = trackIndex ?? 0;
+    debugPrint('_startPlayback[$idx]: "$label" path=$path');
     final player = AudioEngine.instance.tracks[idx];
+    debugPrint('_startPlayback[$idx]: calling stop()...');
     player.stop();
+    debugPrint('_startPlayback[$idx]: stop() done');
     // Sync fade duration before playing
     final existing = _tracks.indexWhere((t) => t.index == idx);
     if (existing >= 0) {
+      _tracks[existing]._lastQueuedPath = null;
+      _tracks[existing]._lastQueuedTime = null;
       player.fadeDurationMs =
           _tracks[existing].fadeEnabled ? _tracks[existing].fadeDurationMs : 0;
     }
+    debugPrint('_startPlayback[$idx]: calling play()...');
     final result = player.play(path);
+    debugPrint(
+        '_startPlayback[$idx]: play() result=$result, dur=${player.duration.inMilliseconds}ms');
     setState(() {
       if (result == 0) {
         _status = 'Track $idx: $label';
@@ -324,6 +345,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         // Start name listener for gap-less tracking (re-subscribes if reused)
         final wt = _tracks.firstWhere((t) => t.index == idx);
+        debugPrint('_startPlayback[$idx]: starting name listener');
         wt.startNameListener(
           onNameChanged: () => _reQueueNext(idx),
           onAborted: (abortedName) => _onGaplessAborted(idx, abortedName),
@@ -343,22 +365,27 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
       } else {
+        debugPrint('_startPlayback[$idx]: START ERROR $result');
         _status = '$label: start error $result';
       }
     });
   }
 
   void _onGaplessAborted(int trackIndex, String abortedName) {
+    debugPrint(
+        '_onGaplessAborted[$trackIndex]: START — aborted="$abortedName"');
     // Find the aborted track's full path in the library
     final match = _audioFiles.where((e) => _fileName(e.path) == abortedName);
     if (match.isEmpty) {
-      debugPrint('_onGaplessAborted: "$abortedName" not found in library');
+      debugPrint(
+          '_onGaplessAborted[$trackIndex]: "$abortedName" NOT found in library');
       setState(
           () => _status = 'Gapless aborted: $abortedName (not in library)');
       return;
     }
     final abortedPath = match.first.path;
-    debugPrint('_onGaplessAborted[$trackIndex]: playing "$abortedName" fresh');
+    debugPrint(
+        '_onGaplessAborted[$trackIndex]: playing "$abortedName" fresh from $abortedPath');
     setState(() => _status = 'Gapless aborted → playing $abortedName fresh');
     // Play the aborted track fresh on the same slot (new AAudio stream)
     _startPlayback(abortedPath, abortedName, trackIndex: trackIndex);
@@ -367,8 +394,13 @@ class _HomeScreenState extends State<HomeScreen> {
     if (curIdx >= 0 && curIdx + 1 < _audioFiles.length) {
       final nextPath = _audioFiles[curIdx + 1].path;
       final nextName = _fileName(nextPath);
+      debugPrint(
+          '_onGaplessAborted[$trackIndex]: re-queueing next="$nextName" after "$abortedName"');
       AudioEngine.instance.tracks[trackIndex]
           .setNextTrack(nextPath, name: nextName);
+    } else {
+      debugPrint(
+          '_onGaplessAborted[$trackIndex]: no next file after "$abortedName" (curIdx=$curIdx)');
     }
   }
 
@@ -396,15 +428,24 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final trackUi = t.first;
+    debugPrint(
+        '_reQueueNext[$trackIndex]: called, running=${trackUi.running}, label="${trackUi.label}"');
     // Reset waveform and position for the new song (gapless transition)
-    trackUi.waveformPeaks = [];
-    trackUi.position = 0;
-    trackUi.duration = 0;
-    trackUi.sliderValue = 0.0;
-    // Re-analyze waveform for the new song
     final player = trackUi.player;
+    final newDur = player.duration.inMilliseconds;
+    final newPos = player.position.inMilliseconds;
+    debugPrint(
+        '_reQueueNext[$trackIndex]: player dur=${newDur}ms, pos=${newPos}ms, state=${player.state.name}');
+    setState(() {
+      trackUi.waveformPeaks = [];
+      trackUi.position = newPos;
+      trackUi.duration = newDur;
+      trackUi.sliderValue =
+          newDur > 0 ? newPos.toDouble().clamp(0.0, newDur.toDouble()) : 0.0;
+    });
+    // Re-analyze waveform for the new song
     final peaks = player.analyzeWaveform(numBars: 100);
-    if (mounted && peaks.isNotEmpty) {
+    if (mounted) {
       setState(() {
         trackUi.waveformPeaks = peaks;
       });
@@ -420,7 +461,23 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final nextPath = _audioFiles[idx + 1].path;
     final nextName = _fileName(nextPath);
-    debugPrint('_reQueueNext[$trackIndex]: queuing "$nextName"');
+    // Debounce: skip if same path queued within 1s (prevents infinite loop after abort)
+    final now = DateTime.now();
+    final elapsed = trackUi._lastQueuedTime != null
+        ? now.difference(trackUi._lastQueuedTime!).inMilliseconds
+        : -1;
+    debugPrint(
+        '_reQueueNext[$trackIndex]: queuing "$nextName" (debounce: last="${trackUi._lastQueuedPath}", elapsed=${elapsed}ms)');
+    if (trackUi._lastQueuedPath == nextPath &&
+        trackUi._lastQueuedTime != null &&
+        now.difference(trackUi._lastQueuedTime!).inMilliseconds < 1000) {
+      debugPrint(
+          '_reQueueNext[$trackIndex]: DEBOUNCE HIT — skipping setNextTrack');
+      return;
+    }
+    trackUi._lastQueuedPath = nextPath;
+    trackUi._lastQueuedTime = now;
+    debugPrint('_reQueueNext[$trackIndex]: calling setNextTrack');
     AudioEngine.instance.tracks[trackIndex]
         .setNextTrack(nextPath, name: nextName);
   }

@@ -103,6 +103,28 @@ int32_t track_play(int32_t index, const char* path) {
     }
 
     if (strcmp(extLower, ".flac") == 0) {
+        // Probe real format — handle mislabeled files (e.g. MP3 saved as .flac)
+        ProbedFormat realFmt = probeAudioFormat(path);
+        if (realFmt != ProbedFormat::FLAC && realFmt != ProbedFormat::UNKNOWN) {
+            LOGI("track_play[%d]: .flac extension but real format is %d — routing to MediaCodec",
+                 index, (int)realFmt);
+            trk.ringBuf = new RingBuffer();
+            trk.pcmRingBuf = new RingBuffer();
+            trk.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+            if (trk.stopFd < 0) {
+                delete trk.ringBuf; trk.ringBuf = nullptr;
+                delete trk.pcmRingBuf; trk.pcmRingBuf = nullptr;
+                return -8;
+            }
+            trk.format = AudioFormat::MEDIA;
+            trk.volume = 1.0f;
+            trk.pan = 0.0f;
+            trk.mute = 0;
+            trk.solo = 0;
+            trk.worker = std::thread(mediaPlaybackThread, index);
+            LOGI("track_play[%d]: Media thread launched (probed from .flac)", index);
+            return 0;
+        }
         trk.ringBuf = new RingBuffer();
         trk.pcmRingBuf = new RingBuffer();
         trk.stopFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
