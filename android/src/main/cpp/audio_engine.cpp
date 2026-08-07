@@ -29,12 +29,16 @@
 #include <cctype>
 #include <thread>
 #include <jni.h>
+#include <time.h>
 
 // ─── AAudio data callback (runs in high-priority audio thread) ───────────────
 // Sums all active tracks into a single output buffer with volume/pan per track.
 
 aaudio_data_callback_result_t aaudioDataCallback(
     AAudioStream *stream, void *userData, void *audioData, int32_t numFrames) {
+
+    struct timespec tStart;
+    clock_gettime(CLOCK_MONOTONIC, &tStart);
 
     float *out = (float*)audioData;
     int32_t ch = gCtl.outChannels;
@@ -63,8 +67,23 @@ aaudio_data_callback_result_t aaudioDataCallback(
         if (anySolo && !trk.solo) continue;
 
         int32_t frames = trk.ringBuf->pop(temp, numFrames, ch);
-        if (frames <= 0) continue;
+        if (frames <= 0) {
+            trk.underrunCount.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
         if (frames > maxFrames) maxFrames = frames;
+        trk.totalCallbacks.fetch_add(1, std::memory_order_relaxed);
+        trk.totalCallbackFrames.fetch_add(frames, std::memory_order_relaxed);
+
+        // Log first-audio latency (time from track_play to first successful pop)
+        int64_t playStart = trk.playStartTimeMs.load(std::memory_order_relaxed);
+        if (playStart > 0) {
+            trk.playStartTimeMs.store(0, std::memory_order_relaxed);
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            int64_t nowMs = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            LOGI("PERF[%d]: first-audio latency = %lld ms", t, (long long)(nowMs - playStart));
+        }
 
         // Apply volume + constant-power pan (relaxed loads — stale values cause 1-frame glitch, inaudible)
         float vol = trk.volume.load(std::memory_order_relaxed);
@@ -151,6 +170,51 @@ aaudio_data_callback_result_t aaudioDataCallback(
     // Apply limiter (post-effects, protects against EQ + compressor boost)
     if (gCtl.limiter && maxFrames > 0) {
         gCtl.limiter->process(out, maxFrames, ch);
+    }
+
+    // ─── Performance telemetry ───────────────────────────────────────────
+    struct timespec tEnd;
+    clock_gettime(CLOCK_MONOTONIC, &tEnd);
+    int64_t durNs = (int64_t)(tEnd.tv_sec - tStart.tv_sec) * 1000000000LL
+                   + (int64_t)(tEnd.tv_nsec - tStart.tv_nsec);
+    gCtl.callbackCount.fetch_add(1, std::memory_order_relaxed);
+    gCtl.callbackSumNs.fetch_add(durNs, std::memory_order_relaxed);
+    // Update max (relaxed CAS loop — rare contention, negligible cost)
+    int64_t prevMax = gCtl.callbackMaxNs.load(std::memory_order_relaxed);
+    while (durNs > prevMax) {
+        if (gCtl.callbackMaxNs.compare_exchange_weak(prevMax, durNs, std::memory_order_relaxed))
+            break;
+    }
+
+    // Periodic perf log every 5 seconds
+    if (tStart.tv_sec - gCtl.lastPerfLogNs >= 5) {
+        gCtl.lastPerfLogNs = tStart.tv_sec;
+        int64_t count = gCtl.callbackCount.exchange(0, std::memory_order_relaxed);
+        int64_t sumNs = gCtl.callbackSumNs.exchange(0, std::memory_order_relaxed);
+        int64_t maxNs = gCtl.callbackMaxNs.exchange(0, std::memory_order_relaxed);
+        int32_t underruns = gCtl.engineUnderruns.exchange(0, std::memory_order_relaxed);
+        float avgUs = (count > 0) ? (float)(sumNs / count) / 1000.0f : 0;
+        float maxUs = (float)maxNs / 1000.0f;
+
+        // Per-track ring buffer fill and underruns
+        for (int t = 0; t < MAX_TRACKS; t++) {
+            TrackState &trk = gCtl.tracks[t];
+            if (!trk.running || !trk.ringBuf) continue;
+            int32_t fill = trk.ringBuf->available(ch);
+            int32_t cap = trk.ringBuf->capacity(ch);
+            int32_t pct = (cap > 0) ? (fill * 100 / cap) : 0;
+            int32_t trackUnderruns = trk.underrunCount.exchange(0, std::memory_order_relaxed);
+            int32_t trackCallbacks = trk.totalCallbacks.exchange(0, std::memory_order_relaxed);
+            int64_t trackFrames = trk.totalCallbackFrames.exchange(0, std::memory_order_relaxed);
+            float trackFps = (trackCallbacks > 0 && ch > 0)
+                ? (float)(trackFrames / ch) / (float)trackCallbacks : 0;
+            LOGI("PERF[%d]: ring=%d/%d (%d%%) underruns=%d f_per_cb=%.1f",
+                 t, fill, cap, pct, trackUnderruns, trackFps);
+        }
+        // AAudio xrun count (hardware-level)
+        int32_t hwXruns = AAudioStream_getXRunCount(stream);
+        LOGI("PERF callback: avg=%.1fus max=%.1fus underruns=%d hw_xruns=%d callbacks=%lld",
+             avgUs, maxUs, underruns, hwXruns, (long long)count);
     }
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;

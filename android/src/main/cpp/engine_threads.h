@@ -9,7 +9,14 @@
 
 #pragma once
 
+#include <stdint.h>
+
 void wavPlaybackThread(int trackIndex);
 void flacPlaybackThread(int trackIndex);
 void mediaPlaybackThread(int trackIndex);
 void mediaStreamPlaybackThread(int trackIndex);
+
+// Pre-create AAudio stream + DSP/Limiter/FX for given SR/ch.
+// Called from track_play() to move stream creation off the decoder thread.
+// Returns true if stream already existed with matching SR/ch, or was created successfully.
+bool initFirstTrackStream(int32_t sr, int32_t ch);

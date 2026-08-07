@@ -19,10 +19,12 @@
 #include "compressor.h"
 #include "reverb.h"
 #include "common.h"
+#include "aaudio_utils.h"
 
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <chrono>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
@@ -97,6 +99,13 @@ int32_t track_play(int32_t index, const char* path) {
         trk.pan = 0.0f;
         trk.mute = 0;
         trk.solo = 0;
+        // Pre-create AAudio stream before decoder thread (saves ~300ms on cold start)
+        if (!gCtl.stream && trk.sampleRate > 0 && trk.channels > 0) {
+            LOGI("track_play[%d]: pre-creating AAudio stream (%dHz/%dch)", index, trk.sampleRate, trk.channels);
+            initFirstTrackStream(trk.sampleRate, trk.channels);
+        }
+        trk.playStartTimeMs.store((int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
         trk.worker = std::thread(wavPlaybackThread, index);
         LOGI("track_play[%d]: WAV thread launched", index);
         return 0;
@@ -121,6 +130,8 @@ int32_t track_play(int32_t index, const char* path) {
             trk.pan = 0.0f;
             trk.mute = 0;
             trk.solo = 0;
+            trk.playStartTimeMs.store((int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
             trk.worker = std::thread(mediaPlaybackThread, index);
             LOGI("track_play[%d]: Media thread launched (probed from .flac)", index);
             return 0;
@@ -138,6 +149,16 @@ int32_t track_play(int32_t index, const char* path) {
         trk.pan = 0.0f;
         trk.mute = 0;
         trk.solo = 0;
+        // Pre-create AAudio stream before decoder thread (saves ~300ms on cold start)
+        if (!gCtl.stream) {
+            FlacInfo fi;
+            if (get_flac_info(path, &fi) == 0 && fi.sampleRate > 0 && fi.channels > 0) {
+                LOGI("track_play[%d]: pre-creating AAudio stream (%dHz/%dch)", index, fi.sampleRate, fi.channels);
+                initFirstTrackStream(fi.sampleRate, fi.channels);
+            }
+        }
+        trk.playStartTimeMs.store((int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
         trk.worker = std::thread(flacPlaybackThread, index);
         LOGI("track_play[%d]: FLAC thread launched", index);
         return 0;
@@ -158,6 +179,8 @@ int32_t track_play(int32_t index, const char* path) {
         trk.pan = 0.0f;
         trk.mute = 0;
         trk.solo = 0;
+        trk.playStartTimeMs.store((int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
         trk.worker = std::thread(mediaPlaybackThread, index);
         LOGI("track_play[%d]: Media thread launched", index);
         return 0;

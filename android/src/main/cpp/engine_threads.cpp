@@ -320,7 +320,7 @@ static AMediaCodec* createCodecFromExtractor(
     return codec;
 }
 
-static bool initFirstTrackStream(int32_t sr, int32_t ch) {
+bool initFirstTrackStream(int32_t sr, int32_t ch) {
     if (sr <= 0 || ch <= 0) return true;
 
     // Stream exists — check if sample rate or channels changed
@@ -590,6 +590,12 @@ void flacPlaybackThread(int ti) {
     trk.running = 1;
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
     ps.stream = gCtl.stream;
+
+    // Pre-decode first block into ring buffer so AAudio callback finds data immediately.
+    // Must run AFTER running=1 — write callback checks trk.running and aborts if false.
+    if (!trk.crossfading.load() && !trk.hasNext) {
+        FLAC__stream_decoder_process_single(decoder);
+    }
 
     int32_t ch = ps.info.channels;
     int32_t threshold = RingBuffer::pacingThreshold(ch);

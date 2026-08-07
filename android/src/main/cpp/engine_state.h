@@ -97,6 +97,12 @@ struct TrackState {
     // Rate-limit for Dart position push callbacks (max 20/sec)
     std::atomic<int64_t> lastCallbackMs{0};
 
+    // ─── Performance telemetry (reset on each track_play) ────────────────
+    std::atomic<int64_t> playStartTimeMs{0};     // steady_clock when track_play was called
+    std::atomic<int32_t> underrunCount{0};        // pop() returned 0 frames in AAudio callback
+    std::atomic<int32_t> totalCallbacks{0};       // total AAudio callbacks for this track
+    std::atomic<int64_t> totalCallbackFrames{0};  // sum of frames popped from ring buffer
+
     // Pre-allocated scratch buffers for crossfade/resample in flacEngineWriteCallback.
     // Avoids heap alloc on every FLAC decode callback (audio-adjacent thread).
     float *xmixBuf{nullptr};
@@ -183,6 +189,13 @@ struct EngineState {
 
     // AAudio stream disconnect detection
     std::atomic<int> streamDisconnected{0};
+
+    // ─── Engine-level performance telemetry ──────────────────────────────
+    std::atomic<int64_t> callbackCount{0};         // total callbacks since engine start
+    std::atomic<int64_t> callbackSumNs{0};         // sum of callback durations (ns)
+    std::atomic<int64_t> callbackMaxNs{0};         // max single callback duration (ns)
+    std::atomic<int32_t> engineUnderruns{0};       // total underruns across all tracks
+    int64_t lastPerfLogNs{0};                      // monotonic timestamp of last perf log
 
     // Dart Native Port for position push callbacks
     int64_t dartPort{0};
