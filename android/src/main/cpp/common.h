@@ -123,16 +123,23 @@ static inline void resampleSinc(float *out, int32_t outFrames,
 static inline void resampleSincStream(float *out, int32_t &outFrames,
                                       const float *in, int32_t inFrames,
                                       int32_t channels, double ratio,
-                                      float *overlap, int32_t &overlapCount) {
+                                      float *overlap, int32_t &overlapCount,
+                                      float *&extBuf, int32_t &extBufCap) {
     const SincTable& st = getSincTable();
 
     // Build extended input: [overlap | current block]
     int32_t extLen = overlapCount + inFrames;
-    std::vector<float> ext(extLen * channels);
-    if (overlapCount > 0) {
-        memcpy(ext.data(), overlap, overlapCount * channels * sizeof(float));
+    int32_t extSamples = extLen * channels;
+    if (extSamples > extBufCap) {
+        delete[] extBuf;
+        extBuf = new float[extSamples];
+        extBufCap = extSamples;
     }
-    memcpy(ext.data() + overlapCount * channels, in, inFrames * channels * sizeof(float));
+    float *ext = extBuf;
+    if (overlapCount > 0) {
+        memcpy(ext, overlap, overlapCount * channels * sizeof(float));
+    }
+    memcpy(ext + overlapCount * channels, in, inFrames * channels * sizeof(float));
 
     // Compute output range: skip frames that correspond to the overlap region
     int32_t skipOutput = (overlapCount > 0) ? (int32_t)(overlapCount * ratio + 0.5) : 0;

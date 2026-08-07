@@ -119,7 +119,7 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
     for (int32_t i = 0; i < frames; i++)
         for (int32_t ch = 0; ch < channels; ch++) {
             float s = buffer[ch][i] * scale;
-            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
+            s = s < -1.0f ? -1.0f : (s > 1.0f ? 1.0f : s);
             floatBuf[i * channels + ch] = s;
         }
 
@@ -148,10 +148,11 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
                 if (outFrames > 0 && outFrames <= frames * 2) {
                     ensureCapacity(trk.xresampleBuf, trk.xresampleBufCapacity, outFrames * channels);
                     resampleSincStream(trk.xresampleBuf, outFrames, floatBuf, frames, channels, ratio,
-                                       trk.resampleOverlap, trk.resampleOverlapCount);
+                                       trk.resampleOverlap, trk.resampleOverlapCount,
+                                       trk.xExtBuf, trk.xExtBufCapacity);
                     for (int32_t i = 0; i < outFrames * channels; i++) {
-                        if (trk.xresampleBuf[i] > 1.0f) trk.xresampleBuf[i] = 1.0f;
-                        else if (trk.xresampleBuf[i] < -1.0f) trk.xresampleBuf[i] = -1.0f;
+                        float v = trk.xresampleBuf[i];
+                        trk.xresampleBuf[i] = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
                     }
                     oldFrames = trk.xresampleBuf;
                     oldCount = outFrames;
@@ -165,18 +166,19 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             int32_t startPos = fadeLen - remaining;
             ensureCapacity(trk.xmixBuf, trk.xmixBufCapacity, mixCount * channels);
             float *mixed = trk.xmixBuf;
+            float tStep = 1.0f / (float)fadeLen;
+            float t = (float)startPos * tStep;
             for (int32_t i = 0; i < mixCount; i++) {
-                float t = (float)(startPos + i) / fadeLen;
-                // Smoothstep S-Curve: even perceptual distribution
                 float t2 = t * t;
                 float t3 = t2 * t;
                 float fadeOut = 1.0f - 3.0f * t2 + 2.0f * t3;
                 float fadeIn = 3.0f * t2 - 2.0f * t3;
+                t += tStep;
                 for (int32_t c = 0; c < channels; c++) {
                     float o = oldFrames[i * channels + c] * fadeOut;
                     float n = trk.preBuf[trk.crossfadePreBufPos * channels + c] * fadeIn;
                     float m = o + n;
-                    if (m > 1.0f) m = 1.0f; else if (m < -1.0f) m = -1.0f;
+                    m = m < -1.0f ? -1.0f : (m > 1.0f ? 1.0f : m);
                     mixed[i * channels + c] = m;
                 }
                 trk.crossfadePreBufPos++;
@@ -226,10 +228,11 @@ FLAC__StreamDecoderWriteStatus flacEngineWriteCallback(
             if (outFrames > 0 && outFrames <= frames * 2) {
                 ensureCapacity(trk.xresampleBuf, trk.xresampleBufCapacity, outFrames * channels);
                 resampleSincStream(trk.xresampleBuf, outFrames, floatBuf, frames, channels, ratio,
-                                   trk.resampleOverlap, trk.resampleOverlapCount);
+                                   trk.resampleOverlap, trk.resampleOverlapCount,
+                                   trk.xExtBuf, trk.xExtBufCapacity);
                 for (int32_t i = 0; i < outFrames * channels; i++) {
-                    if (trk.xresampleBuf[i] > 1.0f) trk.xresampleBuf[i] = 1.0f;
-                    else if (trk.xresampleBuf[i] < -1.0f) trk.xresampleBuf[i] = -1.0f;
+                    float v = trk.xresampleBuf[i];
+                    trk.xresampleBuf[i] = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
                 }
                 updateFadeHistory(trk, trk.xresampleBuf, outFrames, channels);
                 applyFadeIn(trk, trk.xresampleBuf, outFrames, channels);

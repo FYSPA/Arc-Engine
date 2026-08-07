@@ -25,9 +25,8 @@ void resetCtl() {
     gCtl.sampleRate = 0;
     gCtl.outChannels = 0;
     gCtl.dsp = nullptr;
-    gCtl.masterVolume = 1.0f;
+    gCtl.masterVolume.store(1.0f, std::memory_order_relaxed);
     gCtl.eqPending = 0;
-    // crossfadeMs is a user preference — don't reset
 }
 
 void stopTrack(int index) {
@@ -70,6 +69,8 @@ void stopTrack(int index) {
     trk.seekToFrame = -1;
     trk.volume = 1.0f;
     trk.pan = 0.0f;
+    trk.cosPan = 0.70710678f;
+    trk.sinPan = 0.70710678f;
     trk.mute = 0;
     trk.solo = 0;
     trk.repeatCount = 0;
@@ -84,6 +85,7 @@ void stopTrack(int index) {
     trk.crossfadeRemaining = 0;
     trk.fadeHistPos = 0;
     trk.fadeHistCount = 0;
+    freeFadeHistory(trk);
     trk.fadeLen.store(crossfadeMsToFrames(gCtl.crossfadeMs.load()));
     if (trk.preBuf) { delete[] trk.preBuf; trk.preBuf = nullptr; }
     trk.preBufReady = 0;
@@ -95,6 +97,7 @@ void stopTrack(int index) {
     memset(trk.resampleOverlap, 0, sizeof(trk.resampleOverlap));
     if (trk.xmixBuf) { delete[] trk.xmixBuf; trk.xmixBuf = nullptr; trk.xmixBufCapacity = 0; }
     if (trk.xresampleBuf) { delete[] trk.xresampleBuf; trk.xresampleBuf = nullptr; trk.xresampleBufCapacity = 0; }
+    if (trk.xExtBuf) { delete[] trk.xExtBuf; trk.xExtBuf = nullptr; trk.xExtBufCapacity = 0; }
 
     // Per-track EQ is NOT deleted here — it persists across play/stop cycles.
     // It's only deleted in cleanupEngine() or when explicitly cleared via FFI.
@@ -131,6 +134,8 @@ void cleanupEngine() {
         // Crossfade scratch buffers
         if (gCtl.tracks[i].xmixBuf) { delete[] gCtl.tracks[i].xmixBuf; gCtl.tracks[i].xmixBuf = nullptr; gCtl.tracks[i].xmixBufCapacity = 0; }
         if (gCtl.tracks[i].xresampleBuf) { delete[] gCtl.tracks[i].xresampleBuf; gCtl.tracks[i].xresampleBuf = nullptr; gCtl.tracks[i].xresampleBufCapacity = 0; }
+        if (gCtl.tracks[i].xExtBuf) { delete[] gCtl.tracks[i].xExtBuf; gCtl.tracks[i].xExtBuf = nullptr; gCtl.tracks[i].xExtBufCapacity = 0; }
+        freeFadeHistory(gCtl.tracks[i]);
     }
 
     // Close shared AAudio stream — moved to stopEngine() to avoid blocking
@@ -207,12 +212,14 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
         trk.preBufReady = 0; trk.preBufFrames = 0;
         trk.crossfading = 0;
         trk.crossfadeRemaining = 0;
+        freeFadeHistory(trk);
         return preFrames;
     }
 
     // ─── Caso 2: sin preBuf → activar fade-in para decoder nuevo ───
     // Old track's frames are already in the ring buffer — no replay needed.
     if (preFrames <= 0) {
+        allocFadeHistory(trk);
         trk.crossfading = 1;
         trk.crossfadeRemaining = fadeLen;
         return 0;
@@ -237,6 +244,7 @@ int32_t writeGaplessCrossfade(TrackState &trk, int32_t fadeCh) {
 
     trk.crossfading = 0;
     trk.crossfadeRemaining = 0;
+    freeFadeHistory(trk);
 
     delete[] trk.preBuf; trk.preBuf = nullptr;
     trk.preBufReady = 0; trk.preBufFrames = 0;

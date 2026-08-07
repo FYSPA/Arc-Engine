@@ -54,6 +54,8 @@ struct TrackState {
 
     std::atomic<float> volume{1.0f};
     std::atomic<float> pan{0.0f};
+    float cosPan{0.70710678f};  // cos(PI/4) — cached for AAudio callback (avoids cosf/sinf per frame)
+    float sinPan{0.70710678f};  // sin(PI/4)
     float lastFrame[2]{};
 
     char nextPath[512]{0};
@@ -62,7 +64,7 @@ struct TrackState {
     std::atomic<int> gapLessAbort{0};
 
     // Crossfade state for smooth gapless transitions
-    float fadeHistory[MAX_CROSSFADE_FRAMES * 2]{};
+    float *fadeHistory{nullptr};  // heap-allocated only during crossfade (saves 3.4MB per track)
     int fadeHistPos{0};
     int fadeHistCount{0};
     std::atomic<int> crossfading{0};
@@ -101,6 +103,8 @@ struct TrackState {
     int32_t xmixBufCapacity{0};
     float *xresampleBuf{nullptr};
     int32_t xresampleBufCapacity{0};
+    float *xExtBuf{nullptr};      // pre-allocated extended input for resampleSincStream
+    int32_t xExtBufCapacity{0};
 
     // Pause/Resume/Stop fade ramp (smooth volume transitions)
     // 0=none, 1=fade-out (pause/stop), 2=fade-in (resume)
@@ -113,13 +117,23 @@ struct TrackState {
 
 // ─── Crossfade helpers (inline, after TrackState is complete) ─────────────────
 
+// Allocate/free fadeHistory buffer on demand (saves 3.4MB per track when idle).
+inline void allocFadeHistory(TrackState &trk) {
+    if (!trk.fadeHistory)
+        trk.fadeHistory = new float[MAX_CROSSFADE_FRAMES * 2]();
+}
+inline void freeFadeHistory(TrackState &trk) {
+    if (trk.fadeHistory) { delete[] trk.fadeHistory; trk.fadeHistory = nullptr; }
+}
+
 // Update circular fade history with the last fadeLen decoded frames.
 inline void updateFadeHistory(TrackState &trk, const float *buf, int32_t frames, int32_t ch) {
+    if (!trk.fadeHistory) return;  // no crossfade active — skip
     for (int32_t i = 0; i < frames; i++) {
         int pos = trk.fadeHistPos * 2;
         trk.fadeHistory[pos] = buf[i * ch];
         trk.fadeHistory[pos + 1] = (ch > 1) ? buf[i * ch + 1] : buf[i * ch];
-        trk.fadeHistPos = (trk.fadeHistPos + 1) % MAX_CROSSFADE_FRAMES;
+        if (++trk.fadeHistPos >= MAX_CROSSFADE_FRAMES) trk.fadeHistPos = 0;
         if (trk.fadeHistCount < MAX_CROSSFADE_FRAMES) trk.fadeHistCount++;
     }
 }
@@ -128,16 +142,17 @@ inline void updateFadeHistory(TrackState &trk, const float *buf, int32_t frames,
 // Uses smoothstep S-Curve for even perceptual distribution.
 inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch) {
     if (!trk.crossfading || trk.fadeLen <= 0) return;
-    int32_t fadeLen = trk.fadeLen.load();
-    int32_t rem = trk.crossfadeRemaining.load();
+    int32_t fadeLen = trk.fadeLen.load(std::memory_order_relaxed);
+    int32_t rem = trk.crossfadeRemaining.load(std::memory_order_relaxed);
     if (rem <= 0) {
         trk.crossfading = 0;
         trk.crossfadeRemaining = 0;
         return;
     }
+    float invFadeLen = 1.0f / (float)fadeLen;
     for (int32_t i = 0; i < frames; i++) {
         if (rem <= 0) break;
-        float t = (float)(fadeLen - rem) / fadeLen;
+        float t = (float)(fadeLen - rem) * invFadeLen;
         float t2 = t * t;
         float t3 = t2 * t;
         float g = 3.0f * t2 - 2.0f * t3;  // smoothstep fade-in
@@ -145,9 +160,8 @@ inline void applyFadeIn(TrackState &trk, float *buf, int32_t frames, int32_t ch)
             buf[i * ch + c] *= g;
         rem--;
     }
-    trk.crossfadeRemaining = rem;
+    trk.crossfadeRemaining.store(rem, std::memory_order_relaxed);
     if (rem <= 0) {
-        LOGI("applyFadeIn: crossfade fade-in complete — crossfading 1→0");
         trk.crossfading = 0;
         trk.crossfadeRemaining = 0;
     }
@@ -163,7 +177,7 @@ struct EngineState {
 
     TrackState tracks[MAX_TRACKS];
 
-    float masterVolume{1.0f};
+    std::atomic<float> masterVolume{1.0f};
     std::atomic<int32_t> crossfadeMs{3000};  // default 3000ms (Spotify-style), converted to frames by crossfadeMsToFrames()
     std::atomic<float> crossfadeVolume{1.0f};  // volume multiplier during crossfade zone (0.0-1.0)
 

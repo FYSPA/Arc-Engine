@@ -54,6 +54,7 @@ aaudio_data_callback_result_t aaudioDataCallback(
         if (gCtl.tracks[s].solo) { anySolo = true; break; }
 
     // Sum all active tracks
+    float temp[4096];  // single buffer outside loop — only one track processed at a time
     for (int t = 0; t < MAX_TRACKS; t++) {
         TrackState &trk = gCtl.tracks[t];
         if (!trk.running || !trk.ringBuf) continue;
@@ -61,15 +62,14 @@ aaudio_data_callback_result_t aaudioDataCallback(
         if (trk.mute) continue;
         if (anySolo && !trk.solo) continue;
 
-        // Temp buffer on stack (max 2048 stereo frames = 16384 bytes)
-        float temp[4096];
         int32_t frames = trk.ringBuf->pop(temp, numFrames, ch);
         if (frames <= 0) continue;
         if (frames > maxFrames) maxFrames = frames;
 
-        // Apply volume + constant-power pan
-        float vol = trk.volume;
-        float pan = trk.pan;
+        // Apply volume + constant-power pan (relaxed loads — stale values cause 1-frame glitch, inaudible)
+        float vol = trk.volume.load(std::memory_order_relaxed);
+        float cosP = trk.cosPan;
+        float sinP = trk.sinPan;
 
         // Pause/Resume fade ramp — interpolate gain per frame
         int fadeState = trk.fadeState.load(std::memory_order_relaxed);
@@ -78,18 +78,17 @@ aaudio_data_callback_result_t aaudioDataCallback(
             int32_t fadeFrames = frames < remaining ? frames : remaining;
             float startGain = trk.fadeGain;
             float endGain = (fadeState == 1) ? 0.0f : 1.0f;
+            float tStep = 1.0f / (float)remaining;
 
             if (ch == 2) {
-                float angle = (pan + 1.0f) * 0.785398163f;
-                float cosP = cosf(angle);
-                float sinP = sinf(angle);
+                float t = 0.0f;
                 for (int32_t f = 0; f < frames; f++) {
                     int i = f * 2;
                     float gain;
                     if (f < fadeFrames) {
-                        float t = (float)f / (float)remaining;
                         float t2 = t * t;
                         gain = startGain + (endGain - startGain) * (3.0f * t2 - 2.0f * t2 * t);
+                        t += tStep;
                     } else {
                         gain = endGain;
                     }
@@ -98,12 +97,13 @@ aaudio_data_callback_result_t aaudioDataCallback(
                     out[i + 1] += temp[i+1] * sinP * g;
                 }
             } else {
+                float t = 0.0f;
                 for (int32_t f = 0; f < frames; f++) {
                     float gain;
                     if (f < fadeFrames) {
-                        float t = (float)f / (float)remaining;
                         float t2 = t * t;
                         gain = startGain + (endGain - startGain) * (3.0f * t2 - 2.0f * t2 * t);
+                        t += tStep;
                     } else {
                         gain = endGain;
                     }
@@ -111,19 +111,16 @@ aaudio_data_callback_result_t aaudioDataCallback(
                 }
             }
 
-            trk.fadeRemaining -= fadeFrames;
-            if (trk.fadeRemaining.load() <= 0) {
+            trk.fadeRemaining.fetch_sub(fadeFrames, std::memory_order_relaxed);
+            if (trk.fadeRemaining.load(std::memory_order_relaxed) <= 0) {
                 if (fadeState == 1) trk.paused = true;
-                trk.fadeState = 0;
+                trk.fadeState.store(0, std::memory_order_relaxed);
                 trk.fadeGain = endGain;
             } else {
                 trk.fadeGain = endGain;
             }
         } else {
             if (ch == 2) {
-                float angle = (pan + 1.0f) * 0.785398163f;
-                float cosP = cosf(angle);
-                float sinP = sinf(angle);
                 for (int32_t f = 0; f < frames; f++) {
                     int i = f * 2;
                     out[i]     += temp[i]   * cosP * vol;
@@ -138,7 +135,7 @@ aaudio_data_callback_result_t aaudioDataCallback(
     }
 
     // Master volume
-    float mv = gCtl.masterVolume;
+    float mv = gCtl.masterVolume.load(std::memory_order_relaxed);
     if (mv != 1.0f && maxFrames > 0) {
         int32_t total = maxFrames * ch;
         for (int i = 0; i < total; i++) out[i] *= mv;
@@ -477,7 +474,11 @@ EXPORT void track_set_pan(int32_t index, float pan) {
     if (index >= 0 && index < MAX_TRACKS) {
         if (pan < -1.0f) pan = -1.0f;
         if (pan > 1.0f) pan = 1.0f;
-        gCtl.tracks[index].pan = pan;
+        gCtl.tracks[index].pan.store(pan, std::memory_order_relaxed);
+        // Cache cos/sin for AAudio callback — avoids cosf/sinf per frame
+        float angle = (pan + 1.0f) * 0.785398163f;
+        gCtl.tracks[index].cosPan = cosf(angle);
+        gCtl.tracks[index].sinPan = sinf(angle);
     }
 }
 
@@ -554,7 +555,8 @@ EXPORT void track_clear_next(int32_t index) {
 }
 
 EXPORT void mixer_set_master_volume(float vol) {
-    gCtl.masterVolume = vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol);
+    gCtl.masterVolume.store(vol < 0.0f ? 0.0f : (vol > 1.0f ? 1.0f : vol),
+                            std::memory_order_relaxed);
 }
 
 EXPORT void engine_set_crossfade_ms(int32_t ms) {
