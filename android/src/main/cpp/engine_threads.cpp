@@ -693,8 +693,19 @@ void flacPlaybackThread(int ti) {
                     trk.preBufReady = 0;
                     // Don't clear preBufFrames/preBufOrigFrames — decoder swap needs them
                 } else {
-                    // Normal gapless: pre-decode, resample, crossfade push
-                    if (!flacGaplessPrep(trk, ch, ti)) break;
+                    // If preBuf was already consumed during crossfade mixing,
+                    // skip writeGaplessCrossfade — only clean up resources.
+                    if (trk.crossfadePreBufPos > 0 && trk.preBufReady) {
+                        LOGI("FLAC thread[%d]: crossfade pre-consumed %d/%d frames — skipping double push",
+                             ti, trk.crossfadePreBufPos, trk.preBufFrames);
+                        delete[] trk.preBuf; trk.preBuf = nullptr;
+                        trk.preBufReady = 0;
+                        trk.crossfadePreBufPos = 0;
+                        freeFadeHistory(trk);
+                    } else {
+                        // Normal gapless: pre-decode, resample, crossfade push
+                        if (!flacGaplessPrep(trk, ch, ti)) break;
+                    }
                 }
                 // Shared decoder swap (both crossfade and normal paths converge here)
                 {
